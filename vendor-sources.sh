@@ -43,10 +43,12 @@ echo "==> bun install --ignore-scripts"
 		--filter '@opencode-ai/codemode' \
 		--filter '@opencode-ai/http-recorder'
 	find . -type f \( -name '*.node' -o -name '*.exe' \) -delete
-	# Isolated linker may put per-workspace node_modules under packages/.
+	# Isolated linker puts per-workspace node_modules under packages/
+	# and packages/*/*/ (e.g. packages/sdk/js).
 	tar -cJf "$HERE/opencode-${VERSION}-node_modules.tar.xz" \
 		node_modules \
 		packages/*/node_modules \
+		packages/*/*/node_modules \
 		2>/dev/null || \
 	tar -cJf "$HERE/opencode-${VERSION}-node_modules.tar.xz" node_modules
 )
