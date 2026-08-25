@@ -12,6 +12,9 @@
 #   ./vendor-sources.sh
 #   abb store opencode-*.tar.gz opencode-*-node_modules.tar.xz models-dev-api.json
 
+# bun --compile emits a standalone binary; there is no debugsource.
+%define debug_package %{nil}
+
 Name:		opencode
 Version:	1.18.22
 Release:	1
