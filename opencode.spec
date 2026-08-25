@@ -109,7 +109,7 @@ export PATH="%{buildroot}%{_bindir}:/usr/bin:$PATH"
 opencode --version
 
 %files
-%license LICENSE LICENSE.md
+%license LICENSE
 %doc README.md
 %{_bindir}/opencode
 %dir %{_datadir}/opencode
