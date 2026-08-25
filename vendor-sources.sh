@@ -42,6 +42,24 @@ echo "==> bun install --ignore-scripts"
 		--filter '@opencode-ai/llm' \
 		--filter '@opencode-ai/codemode' \
 		--filter '@opencode-ai/http-recorder'
+	# --skip-install in %build, so every Linux builder arch needs its
+	# optional native packages. Keep the same --filter list so we do not
+	# pull desktop/web/storybook. --os=linux --cpu=* fetches arm64 as
+	# well as x64 (a host-only install only has *-linux-x64).
+	bun install --frozen-lockfile --ignore-scripts --no-progress \
+		--os=linux --cpu="*" \
+		--filter opencode \
+		--filter '@opencode-ai/core' \
+		--filter '@opencode-ai/script' \
+		--filter '@opencode-ai/sdk' \
+		--filter '@opencode-ai/plugin' \
+		--filter '@opencode-ai/protocol' \
+		--filter '@opencode-ai/schema' \
+		--filter '@opencode-ai/server' \
+		--filter '@opencode-ai/tui' \
+		--filter '@opencode-ai/llm' \
+		--filter '@opencode-ai/codemode' \
+		--filter '@opencode-ai/http-recorder'
 	find . -type f \( -name '*.node' -o -name '*.exe' \) -delete
 	# Isolated linker puts per-workspace node_modules under packages/
 	# and packages/*/*/ (e.g. packages/sdk/js).
