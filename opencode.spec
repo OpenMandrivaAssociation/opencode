@@ -86,7 +86,8 @@ export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_NOSYSTEM=1
 
 cd packages/opencode
-bun --bun ./script/build.ts --single --skip-install
+# --skip-embed-web-ui: we do not vendor packages/app (desktop/web).
+bun --bun ./script/build.ts --single --skip-install --skip-embed-web-ui
 bun --bun ./script/schema.ts schema.json
 cd -
 
