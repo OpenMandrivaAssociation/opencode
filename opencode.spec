@@ -24,7 +24,7 @@
 
 Name:		opencode
 Version:	1.18.22
-Release:	3
+Release:	4
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -121,12 +121,27 @@ mkdir -p "$CARGO_HOME"
 	cd fff-0.9.4
 	# Never let a rust-toolchain.toml talk to rustup; ABF is offline.
 	rm -f rust-toolchain.toml
-	# Workspace also lists nvim/mcp crates we do not ship or need.
-	sed -i \
-		-e '/"crates\/fff-mcp"/d' \
-		-e '/"crates\/fff-nvim"/d' \
-		Cargo.toml
-	cargo build --release -p fff-c --offline --frozen
+	# winapi 0.3.9 lists unused Windows-gnu import-lib crates as
+	# target deps. cargo --offline still requires them in vendor/.
+	# Drop the deps instead of shipping ~100MB of Windows .a files.
+	if [ -f cargo-vendor/winapi/Cargo.toml ]; then
+		sed -i \
+			-e '/target.i686-pc-windows-gnu.dependencies.winapi-i686-pc-windows-gnu/,+1d' \
+			-e '/target.x86_64-pc-windows-gnu.dependencies.winapi-x86_64-pc-windows-gnu/,+1d' \
+			cargo-vendor/winapi/Cargo.toml
+		python - <<'PY'
+import hashlib, json
+from pathlib import Path
+p = Path("cargo-vendor/winapi/Cargo.toml")
+cpath = Path("cargo-vendor/winapi/.cargo-checksum.json")
+data = json.loads(cpath.read_text())
+data["files"]["Cargo.toml"] = hashlib.sha256(p.read_bytes()).hexdigest()
+cpath.write_text(json.dumps(data, separators=(",", ":")))
+PY
+	fi
+	# --offline is enough: vendor replaces crates.io. --frozen
+	# fights the winapi target-dep edit below.
+	cargo build --release -p fff-c --offline
 )
 FFF_SO="$PWD/fff-0.9.4/target/release/libfff_c.so"
 test -f "$FFF_SO"
