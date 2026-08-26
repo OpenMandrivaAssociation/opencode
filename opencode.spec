@@ -23,9 +23,26 @@
 %define bun_cpu x64
 %endif
 
+# %%{_gnu} is the toolchain ABI suffix: -gnu, -musl, -uclibc,
+# plus ARM variants (-gnueabihf, -musleabihf, -uclibceabihf, ...).
+%define libc_family %(echo '%{_gnu}' | sed 's/^-//;s/eabi.*//')
+
+# fff/opentui npm layouts only exist as gnu vs musl. We still compile
+# the .so from source. musl uses the *-musl packages; everything else
+# (glibc, uclibc-ng) uses the non-musl import path.
+%if "%{libc_family}" == "musl"
+%define fff_libc musl
+%define opentui_libc musl
+%define opentui_pkg_suffix -musl
+%else
+%define fff_libc gnu
+%define opentui_libc glibc
+%define opentui_pkg_suffix %{nil}
+%endif
+
 Name:		opencode
 Version:	1.18.22
-Release:	5
+Release:	6
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -99,6 +116,23 @@ sed -i \
 tar -xf %{S:1}
 tar -xf %{S:3}
 tar -xf %{S:4}
+
+# --single always picks the non-abi target, so upstream would force
+# FFF_LIBC=gnu / OPENTUI_LIBC=glibc. Bake in the host libc from %%{_gnu}.
+python - <<'PY'
+from pathlib import Path
+p = Path("packages/opencode/script/build.ts")
+text = p.read_text()
+old_fff = 'item.abi === "musl" ? "musl" : "gnu"'
+new_fff = '"%{fff_libc}"'
+old_otui = 'item.abi ?? "glibc"'
+new_otui = '"%{opentui_libc}"'
+if old_fff not in text or old_otui not in text:
+	raise SystemExit("build.ts libc defines not found")
+text = text.replace(old_fff, new_fff, 1)
+text = text.replace(old_otui, new_otui)
+p.write_text(text)
+PY
 
 # Anything that looks like a prebuilt native must not reach %build.
 # The from-source .so files are staged later, after this sweep.
@@ -182,7 +216,7 @@ stage_opentui() {
 	mkdir -p "$dest"
 	cat > "$dest/package.json" <<EOF
 {
-  "name": "@opentui/core-linux-%{bun_cpu}",
+  "name": "@opentui/core-linux-%{bun_cpu}%{opentui_pkg_suffix}",
   "version": "0.4.5",
   "type": "module",
   "main": "index.js",
@@ -212,31 +246,31 @@ stage_fff() {
 	mkdir -p "$dest"
 	cat > "$dest/package.json" <<EOF
 {
-  "name": "@ff-labs/fff-bin-linux-%{bun_cpu}-gnu",
+  "name": "@ff-labs/fff-bin-linux-%{bun_cpu}-%{fff_libc}",
   "version": "0.9.4",
   "main": "libfff_c.so",
   "os": ["linux"],
   "cpu": ["%{bun_cpu}"],
-  "libc": ["glibc"]
+  "libc": ["%{opentui_libc}"]
 }
 EOF
 	cp -a "$FFF_SO" "$dest/libfff_c.so"
 }
 
 # Isolated bun layout plus classic node_modules so either resolver works.
-stage_opentui "node_modules/@opentui/core-linux-%{bun_cpu}"
-stage_opentui "node_modules/.bun/node_modules/@opentui/core-linux-%{bun_cpu}"
-stage_fff "node_modules/@ff-labs/fff-bin-linux-%{bun_cpu}-gnu"
-stage_fff "node_modules/.bun/node_modules/@ff-labs/fff-bin-linux-%{bun_cpu}-gnu"
+stage_opentui "node_modules/@opentui/core-linux-%{bun_cpu}%{opentui_pkg_suffix}"
+stage_opentui "node_modules/.bun/node_modules/@opentui/core-linux-%{bun_cpu}%{opentui_pkg_suffix}"
+stage_fff "node_modules/@ff-labs/fff-bin-linux-%{bun_cpu}-%{fff_libc}"
+stage_fff "node_modules/.bun/node_modules/@ff-labs/fff-bin-linux-%{bun_cpu}-%{fff_libc}"
 
 # Next to the already-vendored @opentui/core / @ff-labs/fff-bun installs.
 for coredir in node_modules/.bun/@opentui+core@*/node_modules; do
 	[ -d "$coredir" ] || continue
-	stage_opentui "$coredir/@opentui/core-linux-%{bun_cpu}"
+	stage_opentui "$coredir/@opentui/core-linux-%{bun_cpu}%{opentui_pkg_suffix}"
 done
 for fffdir in node_modules/.bun/@ff-labs+fff-bun@*/node_modules/@ff-labs; do
 	[ -d "$fffdir" ] || continue
-	stage_fff "$fffdir/fff-bin-linux-%{bun_cpu}-gnu"
+	stage_fff "$fffdir/fff-bin-linux-%{bun_cpu}-%{fff_libc}"
 done
 
 # esbuild ignores ESBUILD_BINARY_PATH=/usr/bin/esbuild on purpose.
@@ -253,7 +287,7 @@ if [ -f packages/app/vite.config.ts ]; then
 fi
 
 cd packages/opencode
-# TUI/CLI only (main package). FFF_LIBC=gnu: OpenMandriva is glibc.
+# TUI/CLI only (main package). FFF_LIBC/OPENTUI_LIBC come from %{_gnu}.
 bun --bun ./script/build.ts --single --skip-install --skip-embed-web-ui
 mkdir -p ../../dist-tui
 cp -a dist/opencode-*/bin/opencode ../../dist-tui/opencode
