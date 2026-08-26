@@ -75,34 +75,80 @@ echo "==> bun install --ignore-scripts (JS only, host platform)"
 	tar -cJf "$HERE/opencode-${VERSION}-node_modules.tar.xz" node_modules
 )
 
-echo "==> official WASM fallbacks for the Vite app build"
-# These are portable bytecode, not npm platform .node/.so. Vite 7 needs
-# Rollup's parse/xxhash, Tailwind 4 needs oxide, and @tailwindcss/vite
-# needs lightningcss. %build overlays them onto the stripped JS loaders.
-WASM="$WORKDIR/vite-wasm"
-mkdir -p "$WASM"
+echo "==> Vite natives from source (rollup / lightningcss / oxide / esbuild)"
+# No npm .node, no WASM. %build compiles these against the host libc.
+NAT="$WORKDIR/vite-natives"
+mkdir -p "$NAT"
 (
 	cd "$WORKDIR"
-	curl -fL -o wasm-node.tgz \
-		https://registry.npmjs.org/@rollup/wasm-node/-/wasm-node-4.60.4.tgz
-	curl -fL -o oxide-wasi.tgz \
-		https://registry.npmjs.org/@tailwindcss/oxide-wasm32-wasi/-/oxide-wasm32-wasi-4.1.11.tgz
-	curl -fL -o lightningcss-wasm.tgz \
-		https://registry.npmjs.org/lightningcss-wasm/-/lightningcss-wasm-1.30.1.tgz
-	curl -fL -o esbuild-wasm.tgz \
-		https://registry.npmjs.org/esbuild-wasm/-/esbuild-wasm-0.25.12.tgz
-	mkdir -p "$WASM/rollup-wasm-node" "$WASM/oxide-wasm32-wasi" \
-		"$WASM/lightningcss-wasm" "$WASM/esbuild-wasm"
-	tar -xzf wasm-node.tgz -C "$WASM/rollup-wasm-node" --strip-components=1
-	tar -xzf oxide-wasi.tgz -C "$WASM/oxide-wasm32-wasi" --strip-components=1
-	tar -xzf lightningcss-wasm.tgz -C "$WASM/lightningcss-wasm" --strip-components=1
-	tar -xzf esbuild-wasm.tgz -C "$WASM/esbuild-wasm" --strip-components=1
-	chmod +x "$WASM/esbuild-wasm/bin/esbuild"
-	# Belt and braces: never pack a native binary into this tarball.
-	find "$WASM" -type f \( -name '*.so' -o -name '*.node' -o -name '*.dll' \
-		-o -name '*.dylib' -o -name '*.exe' -o -name '*.a' \) -delete
+	curl -fL -o rollup.tgz \
+		https://github.com/rollup/rollup/archive/v4.60.4/rollup-4.60.4.tar.gz
+	curl -fL -o lightningcss.tgz \
+		https://github.com/parcel-bundler/lightningcss/archive/refs/tags/v1.30.1.tar.gz
+	curl -fL -o tailwind.tgz \
+		https://github.com/tailwindlabs/tailwindcss/archive/refs/tags/v4.1.11.tar.gz
+	curl -fL -o esbuild.tgz \
+		https://github.com/evanw/esbuild/archive/v0.25.12/esbuild-0.25.12.tar.gz
+	tar -xzf rollup.tgz -C "$NAT"
+	tar -xzf lightningcss.tgz -C "$NAT"
+	tar -xzf tailwind.tgz -C "$NAT"
+	tar -xzf esbuild.tgz -C "$NAT"
+
+	# Nightly rustflags break cooker rustc; drop them.
+	rm -f "$NAT/rollup-4.60.4/rust/bindings_napi/.cargo/config.toml"
+	find "$NAT" -maxdepth 3 \( -name rust-toolchain -o -name rust-toolchain.toml \) -delete
+
+	( cd "$NAT/rollup-4.60.4/rust" && mkdir -p .cargo && \
+		cargo vendor --locked cargo-vendor > .cargo/config.toml )
+	( cd "$NAT/lightningcss-1.30.1" && mkdir -p .cargo && \
+		cargo vendor --locked cargo-vendor > .cargo/config.toml )
+	( cd "$NAT/tailwindcss-4.1.11" && mkdir -p .cargo && \
+		cargo vendor --locked cargo-vendor > .cargo/config.toml )
+	( cd "$NAT/esbuild-0.25.12" && go mod vendor )
+
+	# Do not ship Windows import libs / DLLs. Stub napi-build
+	# include_bytes so Linux cargo still compiles windows.rs.
+	find "$NAT" -type f \( -name '*.a' -o -name '*.lib' -o -name '*.dll' \
+		-o -name '*.so' -o -name '*.node' -o -name '*.wasm' \) -delete
+	NAT="$NAT" python - <<'PY'
+import hashlib, json, os
+from pathlib import Path
+root = Path(os.environ["NAT"])
+for win in list(root.rglob("napi-build/src/windows.rs")) + list(root.rglob("napi-build-*/src/windows.rs")):
+	text = win.read_text()
+	if "include_bytes!" not in text:
+		continue
+	for name in ("node-x64.lib", "node-x86.lib", "node-arm64.lib"):
+		text = text.replace(f'include_bytes!("libs/{name}").to_vec()', "Vec::new()")
+	win.write_text(text)
+	csum = win.parents[1] / ".cargo-checksum.json"
+	if not csum.is_file():
+		continue
+	data = json.loads(csum.read_text())
+	data["files"]["src/windows.rs"] = hashlib.sha256(win.read_bytes()).hexdigest()
+	for k in list(data.get("files", {})):
+		p = win.parents[1] / k
+		if not p.exists():
+			del data["files"][k]
+	csum.write_text(json.dumps(data, separators=(",", ":")))
+# Drop checksum entries for deleted binaries.
+for csum in root.rglob(".cargo-checksum.json"):
+	data = json.loads(csum.read_text())
+	changed = False
+	for k in list(data.get("files", {})):
+		if not (csum.parent / k).exists():
+			del data["files"][k]
+			changed = True
+	if changed:
+		csum.write_text(json.dumps(data, separators=(",", ":")))
+PY
+
+	rm -rf "$NAT/rollup-4.60.4/"{docs,examples,test,src,cli,browser,wasm,.github} \
+		"$NAT/lightningcss-1.30.1/"{website,.github} \
+		"$NAT/tailwindcss-4.1.11/"{packages,playgrounds,integrations,.github} \
+		"$NAT/esbuild-0.25.12/"{npm,lib,.github}
 )
-tar -C "$WORKDIR" -cJf "$HERE/opencode-vite-wasm.tar.xz" vite-wasm
+tar -C "$WORKDIR" -cJf "$HERE/opencode-vite-natives.tar.xz" vite-natives
 
 echo "==> models.dev API snapshot"
 curl -fL -o "$HERE/models-dev-api.json" "https://models.dev/api.json"
@@ -114,4 +160,4 @@ echo "  $HERE/opencode-${VERSION}-node_modules.tar.xz"
 echo "  $HERE/models-dev-api.json"
 echo "  $HERE/opentui-zig-0.4.5.tar.xz"
 echo "  $HERE/fff-0.9.4-with-vendor.tar.xz"
-echo "  $HERE/opencode-vite-wasm.tar.xz"
+echo "  $HERE/opencode-vite-natives.tar.xz"

@@ -13,7 +13,7 @@
 #   ./vendor-sources.sh
 #   abb store opencode-*.tar.gz opencode-*-node_modules.tar.xz \
 #     models-dev-api.json opentui-zig-*.tar.xz fff-*-with-vendor.tar.xz \
-#     opencode-vite-wasm.tar.xz
+#     opencode-vite-natives.tar.xz
 
 # bun --compile emits a standalone binary; there is no debugsource.
 %define debug_package %{nil}
@@ -28,22 +28,24 @@
 # plus ARM variants (-gnueabihf, -musleabihf, -uclibceabihf, ...).
 %define libc_family %(echo '%{_gnu}' | sed 's/^-//;s/eabi.*//')
 
-# fff/opentui npm layouts only exist as gnu vs musl. We still compile
-# the .so from source. musl uses the *-musl packages; everything else
-# (glibc, uclibc-ng) uses the non-musl import path.
+# fff/opentui/vite JS loaders only know gnu vs musl path names.
+# The matching .so/.node is always compiled here against the host libc.
+# musl uses the *-musl names; glibc and uclibc-ng use the non-musl names.
 %if "%{libc_family}" == "musl"
 %define fff_libc musl
 %define opentui_libc musl
 %define opentui_pkg_suffix -musl
+%define native_abi musl
 %else
 %define fff_libc gnu
 %define opentui_libc glibc
 %define opentui_pkg_suffix %{nil}
+%define native_abi gnu
 %endif
 
 Name:		opencode
 Version:	1.18.22
-Release:	8
+Release:	9
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -57,10 +59,9 @@ Source2:	models-dev-api.json
 Source3:	opentui-zig-0.4.5.tar.xz
 # fff 0.9.4 crate sources + cargo-vendor (no rust-toolchain, no Windows import libs)
 Source4:	fff-0.9.4-with-vendor.tar.xz
-# Official WASM fallbacks for the Vite 7 app build (rollup 4.60.4,
-# lightningcss 1.30.1, @tailwindcss/oxide 4.1.11, esbuild 0.25.12).
-# Portable bytecode, not npm platform .node binaries.
-Source5:	opencode-vite-wasm.tar.xz
+# Rollup 4.60.4 / lightningcss 1.30.1 / tailwind oxide 4.1.11 /
+# esbuild 0.25.12 sources + cargo/go vendor. Compiled in %build.
+Source5:	opencode-vite-natives.tar.xz
 
 BuildRequires:	bun
 BuildRequires:	nodejs
@@ -68,6 +69,7 @@ BuildRequires:	clang
 BuildRequires:	zig
 BuildRequires:	rust
 BuildRequires:	cargo
+BuildRequires:	golang
 BuildRequires:	pkgconfig(libuv)
 BuildRequires:	python
 BuildRequires:	git
@@ -87,8 +89,9 @@ OpenCode is an open-source AI coding agent. It talks to any LLM provider
 (or a local model) and edits a project from a terminal UI.
 
 This package builds the official bun-compiled CLI from source. Native
-TUI/search libraries are compiled from their Zig and Rust sources.
-It does not download the prebuilt GitHub-release binaries.
+TUI/search/web-tool libraries are compiled from their Zig, Rust and
+Go sources against the host libc. It does not download prebuilt
+npm .node/.so files or WASM bytecode.
 
 The web frontend is not embedded here: `opencode web` proxies to
 https://app.opencode.ai. For an offline UI, install opencode-web.
@@ -281,70 +284,64 @@ for fffdir in node_modules/.bun/@ff-labs+fff-bun@*/node_modules/@ff-labs; do
 	stage_fff "$fffdir/fff-bin-linux-%{bun_cpu}-%{fff_libc}"
 done
 
-# Vite 7 / Tailwind 4 / Rollup 4 / esbuild want npm platform .node
-# binaries. Point them at the official WASM builds instead (Source5).
-# bun's node:wasi has no initialize(), so the Vite step runs under Node.
-export CSS_TRANSFORMER_WASM=1
-export NAPI_RS_FORCE_WASI=1
-chmod +x vite-wasm/esbuild-wasm/bin/esbuild
-export ESBUILD_BINARY_PATH="$PWD/vite-wasm/esbuild-wasm/bin/esbuild"
+# --- Vite natives from source (never npm .node / never WASM) ---
+# JS loaders pick linux-$cpu-gnu vs linux-$cpu-musl by filename only.
+# The file we drop there is compiled against the host libc.
+find vite-natives -name rust-toolchain.toml -delete
+find vite-natives -name rust-toolchain -delete
+# Drop hardcoded cross-linkers / nightly rustflags; use the builder's cc.
+rm -f vite-natives/rollup-4.60.4/rust/bindings_napi/.cargo/config.toml \
+	vite-natives/rollup-4.60.4/rust/bindings_wasm/.cargo/config.toml \
+	vite-natives/tailwindcss-4.1.11/crates/node/.cargo/config.toml
 
-# Rollup: replace dist/native.js with the WASM loader + bindings.
-find node_modules packages -path '*/rollup/dist/native.js' 2>/dev/null |
-while IFS= read -r native; do
-	dist=$(dirname "$native")
-	cp -af vite-wasm/rollup-wasm-node/dist/native.js "$native"
-	rm -rf "$dist/wasm-node"
-	cp -af vite-wasm/rollup-wasm-node/dist/wasm-node "$dist/"
+(
+	cd vite-natives/rollup-4.60.4/rust
+	cargo build --release -p bindings_napi --offline
+)
+ROLLUP_SO="$PWD/vite-natives/rollup-4.60.4/rust/target/release/libbindings_napi.so"
+test -f "$ROLLUP_SO"
+
+(
+	cd vite-natives/lightningcss-1.30.1
+	cargo build --release -p lightningcss_node --offline
+)
+LIGHTNING_SO="$PWD/vite-natives/lightningcss-1.30.1/target/release/liblightningcss_node.so"
+test -f "$LIGHTNING_SO"
+
+(
+	cd vite-natives/tailwindcss-4.1.11
+	cargo build --release -p tailwind-oxide --offline
+)
+OXIDE_SO="$PWD/vite-natives/tailwindcss-4.1.11/target/release/libtailwind_oxide.so"
+test -f "$OXIDE_SO"
+
+(
+	cd vite-natives/esbuild-0.25.12
+	export GOPROXY=off
+	export GOSUMDB=off
+	export GOTOOLCHAIN=local
+	export GOFLAGS="-mod=vendor"
+	go build --buildmode=pie -o bin/esbuild ./cmd/esbuild
+)
+export ESBUILD_BINARY_PATH="$PWD/vite-natives/esbuild-0.25.12/bin/esbuild"
+test -x "$ESBUILD_BINARY_PATH"
+
+# Stage the freshly built addons where the vendored JS loaders look.
+NATIVE_TRIPLE="linux-%{bun_cpu}-%{native_abi}"
+find node_modules packages -path '*/rollup/dist' -type d 2>/dev/null |
+while IFS= read -r dist; do
+	cp -af "$ROLLUP_SO" "$dist/rollup.${NATIVE_TRIPLE}.node"
 done
-
-# Tailwind oxide: drop the WASI loader next to index.js so
-# require("./tailwindcss-oxide.wasi.cjs") succeeds after the
-# stripped .node load fails. Also install the npm package name
-# the same file tries as a second fallback.
-find node_modules packages -path '*/@tailwindcss/oxide' -type d 2>/dev/null |
-while IFS= read -r oxidedir; do
-	cp -af vite-wasm/oxide-wasm32-wasi/tailwindcss-oxide.wasi.cjs \
-		vite-wasm/oxide-wasm32-wasi/tailwindcss-oxide.wasm32-wasi.wasm \
-		vite-wasm/oxide-wasm32-wasi/wasi-worker.mjs \
-		"$oxidedir/"
-	mkdir -p "$oxidedir/node_modules"
-	cp -af vite-wasm/oxide-wasm32-wasi/node_modules/. "$oxidedir/node_modules/"
-	dest="$(dirname "$oxidedir")/oxide-wasm32-wasi"
-	rm -rf "$dest"
-	cp -af vite-wasm/oxide-wasm32-wasi "$dest"
-done
-mkdir -p node_modules/@tailwindcss
-rm -rf node_modules/@tailwindcss/oxide-wasm32-wasi
-cp -af vite-wasm/oxide-wasm32-wasi node_modules/@tailwindcss/oxide-wasm32-wasi
-mkdir -p node_modules/.bun/node_modules/@tailwindcss
-rm -rf node_modules/.bun/node_modules/@tailwindcss/oxide-wasm32-wasi
-cp -af vite-wasm/oxide-wasm32-wasi \
-	node_modules/.bun/node_modules/@tailwindcss/oxide-wasm32-wasi
-
-# lightningcss: official package.json is "type": "module" and would
-# load index.mjs (needs await init). Force the Node CJS WASM entry.
 find node_modules packages -path '*/lightningcss/package.json' 2>/dev/null |
 while IFS= read -r pkg; do
-	dest="$(dirname "$pkg")/pkg"
-	rm -rf "$dest"
-	cp -af vite-wasm/lightningcss-wasm "$dest"
-	nodedir="$(dirname "$pkg")/node"
-	cat > "$nodedir/index.js" <<'EOF'
-module.exports = require("../pkg/wasm-node.cjs");
-module.exports.browserslistToTargets = require("./browserslistToTargets");
-module.exports.composeVisitors = require("./composeVisitors");
-module.exports.Features = require("./flags").Features;
-EOF
+	cp -af "$LIGHTNING_SO" "$(dirname "$pkg")/lightningcss.${NATIVE_TRIPLE}.node"
+done
+find node_modules packages -path '*/@tailwindcss/oxide' -type d 2>/dev/null |
+while IFS= read -r oxidedir; do
+	cp -af "$OXIDE_SO" "$oxidedir/tailwindcss-oxide.${NATIVE_TRIPLE}.node"
 done
 
-# Vite 7 may still try optional lightningcss minify; keep postcss.
-if [ -f packages/app/vite.config.ts ]; then
-	sed -i '/build: {/a\
-    cssMinify: false,' packages/app/vite.config.ts
-fi
-
-# bun's node:wasi has no initialize(). Tailwind oxide WASI needs Node.
+# bun's node:wasi is incomplete; run Vite under Node with the .node files.
 if [ -f packages/app/package.json ]; then
 	sed -i 's|"build": "vite build"|"build": "node ./node_modules/vite/bin/vite.js build"|' \
 		packages/app/package.json
