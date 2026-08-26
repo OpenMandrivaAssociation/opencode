@@ -45,7 +45,7 @@
 
 Name:		opencode
 Version:	1.18.22
-Release:	10
+Release:	11
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -70,6 +70,7 @@ BuildRequires:	zig
 BuildRequires:	rust
 BuildRequires:	cargo
 BuildRequires:	golang
+BuildRequires:	cmake
 BuildRequires:	pkgconfig(libuv)
 BuildRequires:	python
 BuildRequires:	git
