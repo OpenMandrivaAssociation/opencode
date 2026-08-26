@@ -42,7 +42,7 @@
 
 Name:		opencode
 Version:	1.18.22
-Release:	6
+Release:	7
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -213,6 +213,8 @@ test -n "$OPENTUI_SO" -a -f "$OPENTUI_SO"
 # but with the .so we just compiled.
 stage_opentui() {
 	local dest="$1"
+	# bun isolated linker may have left a symlink here.
+	rm -rf "$dest"
 	mkdir -p "$dest"
 	cat > "$dest/package.json" <<EOF
 {
@@ -243,6 +245,7 @@ EOF
 
 stage_fff() {
 	local dest="$1"
+	rm -rf "$dest"
 	mkdir -p "$dest"
 	cat > "$dest/package.json" <<EOF
 {
