@@ -75,6 +75,35 @@ echo "==> bun install --ignore-scripts (JS only, host platform)"
 	tar -cJf "$HERE/opencode-${VERSION}-node_modules.tar.xz" node_modules
 )
 
+echo "==> official WASM fallbacks for the Vite app build"
+# These are portable bytecode, not npm platform .node/.so. Vite 7 needs
+# Rollup's parse/xxhash, Tailwind 4 needs oxide, and @tailwindcss/vite
+# needs lightningcss. %build overlays them onto the stripped JS loaders.
+WASM="$WORKDIR/vite-wasm"
+mkdir -p "$WASM"
+(
+	cd "$WORKDIR"
+	curl -fL -o wasm-node.tgz \
+		https://registry.npmjs.org/@rollup/wasm-node/-/wasm-node-4.60.4.tgz
+	curl -fL -o oxide-wasi.tgz \
+		https://registry.npmjs.org/@tailwindcss/oxide-wasm32-wasi/-/oxide-wasm32-wasi-4.1.11.tgz
+	curl -fL -o lightningcss-wasm.tgz \
+		https://registry.npmjs.org/lightningcss-wasm/-/lightningcss-wasm-1.30.1.tgz
+	curl -fL -o esbuild-wasm.tgz \
+		https://registry.npmjs.org/esbuild-wasm/-/esbuild-wasm-0.25.12.tgz
+	mkdir -p "$WASM/rollup-wasm-node" "$WASM/oxide-wasm32-wasi" \
+		"$WASM/lightningcss-wasm" "$WASM/esbuild-wasm"
+	tar -xzf wasm-node.tgz -C "$WASM/rollup-wasm-node" --strip-components=1
+	tar -xzf oxide-wasi.tgz -C "$WASM/oxide-wasm32-wasi" --strip-components=1
+	tar -xzf lightningcss-wasm.tgz -C "$WASM/lightningcss-wasm" --strip-components=1
+	tar -xzf esbuild-wasm.tgz -C "$WASM/esbuild-wasm" --strip-components=1
+	chmod +x "$WASM/esbuild-wasm/bin/esbuild"
+	# Belt and braces: never pack a native binary into this tarball.
+	find "$WASM" -type f \( -name '*.so' -o -name '*.node' -o -name '*.dll' \
+		-o -name '*.dylib' -o -name '*.exe' -o -name '*.a' \) -delete
+)
+tar -C "$WORKDIR" -cJf "$HERE/opencode-vite-wasm.tar.xz" vite-wasm
+
 echo "==> models.dev API snapshot"
 curl -fL -o "$HERE/models-dev-api.json" "https://models.dev/api.json"
 
@@ -85,3 +114,4 @@ echo "  $HERE/opencode-${VERSION}-node_modules.tar.xz"
 echo "  $HERE/models-dev-api.json"
 echo "  $HERE/opentui-zig-0.4.5.tar.xz"
 echo "  $HERE/fff-0.9.4-with-vendor.tar.xz"
+echo "  $HERE/opencode-vite-wasm.tar.xz"

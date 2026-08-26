@@ -12,7 +12,8 @@
 # First time, on a networked machine (after bun is installed):
 #   ./vendor-sources.sh
 #   abb store opencode-*.tar.gz opencode-*-node_modules.tar.xz \
-#     models-dev-api.json opentui-zig-*.tar.xz fff-*-with-vendor.tar.xz
+#     models-dev-api.json opentui-zig-*.tar.xz fff-*-with-vendor.tar.xz \
+#     opencode-vite-wasm.tar.xz
 
 # bun --compile emits a standalone binary; there is no debugsource.
 %define debug_package %{nil}
@@ -42,7 +43,7 @@
 
 Name:		opencode
 Version:	1.18.22
-Release:	7
+Release:	8
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -56,6 +57,10 @@ Source2:	models-dev-api.json
 Source3:	opentui-zig-0.4.5.tar.xz
 # fff 0.9.4 crate sources + cargo-vendor (no rust-toolchain, no Windows import libs)
 Source4:	fff-0.9.4-with-vendor.tar.xz
+# Official WASM fallbacks for the Vite 7 app build (rollup 4.60.4,
+# lightningcss 1.30.1, @tailwindcss/oxide 4.1.11, esbuild 0.25.12).
+# Portable bytecode, not npm platform .node binaries.
+Source5:	opencode-vite-wasm.tar.xz
 
 BuildRequires:	bun
 BuildRequires:	nodejs
@@ -63,7 +68,6 @@ BuildRequires:	clang
 BuildRequires:	zig
 BuildRequires:	rust
 BuildRequires:	cargo
-BuildRequires:	esbuild
 BuildRequires:	pkgconfig(libuv)
 BuildRequires:	python
 BuildRequires:	git
@@ -116,6 +120,7 @@ sed -i \
 tar -xf %{S:1}
 tar -xf %{S:3}
 tar -xf %{S:4}
+tar -xf %{S:5}
 
 # --single always picks the non-abi target, so upstream would force
 # FFF_LIBC=gnu / OPENTUI_LIBC=glibc. Bake in the host libc from %%{_gnu}.
@@ -276,17 +281,73 @@ for fffdir in node_modules/.bun/@ff-labs+fff-bun@*/node_modules/@ff-labs; do
 	stage_fff "$fffdir/fff-bin-linux-%{bun_cpu}-%{fff_libc}"
 done
 
-# esbuild ignores ESBUILD_BINARY_PATH=/usr/bin/esbuild on purpose.
-# Point it at a copy so vite can use the system binary.
-mkdir -p .tools
-cp -a /usr/bin/esbuild .tools/esbuild
-export ESBUILD_BINARY_PATH="$PWD/.tools/esbuild"
+# Vite 7 / Tailwind 4 / Rollup 4 / esbuild want npm platform .node
+# binaries. Point them at the official WASM builds instead (Source5).
+# bun's node:wasi has no initialize(), so the Vite step runs under Node.
+export CSS_TRANSFORMER_WASM=1
+export NAPI_RS_FORCE_WASI=1
+chmod +x vite-wasm/esbuild-wasm/bin/esbuild
+export ESBUILD_BINARY_PATH="$PWD/vite-wasm/esbuild-wasm/bin/esbuild"
 
-# Vite 7 may try optional lightningcss/rollup natives we stripped.
-# Force postcss + no native CSS minify for the offline app build.
+# Rollup: replace dist/native.js with the WASM loader + bindings.
+find node_modules packages -path '*/rollup/dist/native.js' 2>/dev/null |
+while IFS= read -r native; do
+	dist=$(dirname "$native")
+	cp -af vite-wasm/rollup-wasm-node/dist/native.js "$native"
+	rm -rf "$dist/wasm-node"
+	cp -af vite-wasm/rollup-wasm-node/dist/wasm-node "$dist/"
+done
+
+# Tailwind oxide: drop the WASI loader next to index.js so
+# require("./tailwindcss-oxide.wasi.cjs") succeeds after the
+# stripped .node load fails. Also install the npm package name
+# the same file tries as a second fallback.
+find node_modules packages -path '*/@tailwindcss/oxide' -type d 2>/dev/null |
+while IFS= read -r oxidedir; do
+	cp -af vite-wasm/oxide-wasm32-wasi/tailwindcss-oxide.wasi.cjs \
+		vite-wasm/oxide-wasm32-wasi/tailwindcss-oxide.wasm32-wasi.wasm \
+		vite-wasm/oxide-wasm32-wasi/wasi-worker.mjs \
+		"$oxidedir/"
+	mkdir -p "$oxidedir/node_modules"
+	cp -af vite-wasm/oxide-wasm32-wasi/node_modules/. "$oxidedir/node_modules/"
+	dest="$(dirname "$oxidedir")/oxide-wasm32-wasi"
+	rm -rf "$dest"
+	cp -af vite-wasm/oxide-wasm32-wasi "$dest"
+done
+mkdir -p node_modules/@tailwindcss
+rm -rf node_modules/@tailwindcss/oxide-wasm32-wasi
+cp -af vite-wasm/oxide-wasm32-wasi node_modules/@tailwindcss/oxide-wasm32-wasi
+mkdir -p node_modules/.bun/node_modules/@tailwindcss
+rm -rf node_modules/.bun/node_modules/@tailwindcss/oxide-wasm32-wasi
+cp -af vite-wasm/oxide-wasm32-wasi \
+	node_modules/.bun/node_modules/@tailwindcss/oxide-wasm32-wasi
+
+# lightningcss: official package.json is "type": "module" and would
+# load index.mjs (needs await init). Force the Node CJS WASM entry.
+find node_modules packages -path '*/lightningcss/package.json' 2>/dev/null |
+while IFS= read -r pkg; do
+	dest="$(dirname "$pkg")/pkg"
+	rm -rf "$dest"
+	cp -af vite-wasm/lightningcss-wasm "$dest"
+	nodedir="$(dirname "$pkg")/node"
+	cat > "$nodedir/index.js" <<'EOF'
+module.exports = require("../pkg/wasm-node.cjs");
+module.exports.browserslistToTargets = require("./browserslistToTargets");
+module.exports.composeVisitors = require("./composeVisitors");
+module.exports.Features = require("./flags").Features;
+EOF
+done
+
+# Vite 7 may still try optional lightningcss minify; keep postcss.
 if [ -f packages/app/vite.config.ts ]; then
 	sed -i '/build: {/a\
     cssMinify: false,' packages/app/vite.config.ts
+fi
+
+# bun's node:wasi has no initialize(). Tailwind oxide WASI needs Node.
+if [ -f packages/app/package.json ]; then
+	sed -i 's|"build": "vite build"|"build": "node ./node_modules/vite/bin/vite.js build"|' \
+		packages/app/package.json
 fi
 
 cd packages/opencode
