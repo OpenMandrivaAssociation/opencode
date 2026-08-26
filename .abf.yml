@@ -1,6 +1,6 @@
 sources:
   opencode-1.18.22.tar.gz: b7ea119253e067a784a14519ebb753d42a9527ef
-  opencode-1.18.22-node_modules.tar.xz: 781dc875dd03e75bfef8f5c8a0f1776f95bfbf76
-  models-dev-api.json: 20692018968d1c6748d44f5f62a15d916158d415
+  opencode-1.18.22-node_modules.tar.xz: 23f90501ebb3037f344f5cf2ce45e30b91f050ed
+  models-dev-api.json: f6f52aecba8bedc2792ca768845a58161e472290
   opentui-zig-0.4.5.tar.xz: ecac35aa4021dd6f32b5549075a06a4335631623
   fff-0.9.4-with-vendor.tar.xz: 447a14dccb1578f5a5b28026ca15457ce7a49237

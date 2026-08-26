@@ -5,8 +5,9 @@
 #
 # Depends on bun, which is the hard package — see ../bun/bun.spec.
 #
-# We ship the TUI/CLI only. The desktop app is a separate, much larger
-# problem (Electron/Tauri + more npm native addons).
+# Main package is the TUI/CLI. opencode-web is the same CLI with the
+# Vite web frontend embedded (offline `opencode web`). Desktop/Electron
+# is still out of scope.
 #
 # First time, on a networked machine (after bun is installed):
 #   ./vendor-sources.sh
@@ -24,7 +25,7 @@
 
 Name:		opencode
 Version:	1.18.22
-Release:	4
+Release:	5
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -45,6 +46,7 @@ BuildRequires:	clang
 BuildRequires:	zig
 BuildRequires:	rust
 BuildRequires:	cargo
+BuildRequires:	esbuild
 BuildRequires:	pkgconfig(libuv)
 BuildRequires:	python
 BuildRequires:	git
@@ -66,6 +68,24 @@ OpenCode is an open-source AI coding agent. It talks to any LLM provider
 This package builds the official bun-compiled CLI from source. Native
 TUI/search libraries are compiled from their Zig and Rust sources.
 It does not download the prebuilt GitHub-release binaries.
+
+The web frontend is not embedded here: `opencode web` proxies to
+https://app.opencode.ai. For an offline UI, install opencode-web.
+
+%package web
+Summary:	OpenCode CLI with embedded web frontend
+Group:		Development/Other
+Requires:	rg
+Requires:	git
+Requires:	fzf
+
+%description web
+Same OpenCode CLI as the main package, but the Vite web frontend is
+compiled in. `opencode-web web` serves that UI locally and does not
+need https://app.opencode.ai.
+
+This is a standalone bun --compile binary. It does not require the
+opencode package.
 
 %prep
 %autosetup -p1 -n opencode-%{version}
@@ -219,16 +239,36 @@ for fffdir in node_modules/.bun/@ff-labs+fff-bun@*/node_modules/@ff-labs; do
 	stage_fff "$fffdir/fff-bin-linux-%{bun_cpu}-gnu"
 done
 
+# esbuild ignores ESBUILD_BINARY_PATH=/usr/bin/esbuild on purpose.
+# Point it at a copy so vite can use the system binary.
+mkdir -p .tools
+cp -a /usr/bin/esbuild .tools/esbuild
+export ESBUILD_BINARY_PATH="$PWD/.tools/esbuild"
+
+# Vite 7 may try optional lightningcss/rollup natives we stripped.
+# Force postcss + no native CSS minify for the offline app build.
+if [ -f packages/app/vite.config.ts ]; then
+	sed -i '/build: {/a\
+    cssMinify: false,' packages/app/vite.config.ts
+fi
+
 cd packages/opencode
-# --skip-embed-web-ui: we do not vendor packages/app (desktop/web).
-# FFF_LIBC=gnu: OpenMandriva is glibc; selects fff-bin-linux-*-gnu.
+# TUI/CLI only (main package). FFF_LIBC=gnu: OpenMandriva is glibc.
 bun --bun ./script/build.ts --single --skip-install --skip-embed-web-ui
+mkdir -p ../../dist-tui
+cp -a dist/opencode-*/bin/opencode ../../dist-tui/opencode
 bun --bun ./script/schema.ts schema.json
+# Same CLI with packages/app/dist embedded (opencode-web subpackage).
+bun --bun ./script/build.ts --single --skip-install
+mkdir -p ../../dist-web
+cp -a dist/opencode-*/bin/opencode ../../dist-web/opencode
 cd -
 
 %install
-install -Dm0755 packages/opencode/dist/opencode-*/bin/opencode \
+install -Dm0755 dist-tui/opencode \
 	%{buildroot}%{_bindir}/opencode
+install -Dm0755 dist-web/opencode \
+	%{buildroot}%{_bindir}/opencode-web
 install -Dm0644 packages/opencode/schema.json \
 	%{buildroot}%{_datadir}/opencode/schema.json
 
@@ -238,6 +278,7 @@ export OPENCODE_DISABLE_MODELS_FETCH=1
 export OPENCODE_DISABLE_AUTOUPDATE=1
 export PATH="%{buildroot}%{_bindir}:/usr/bin:$PATH"
 opencode --version
+opencode-web --version
 
 %files
 %license LICENSE
@@ -245,3 +286,7 @@ opencode --version
 %{_bindir}/opencode
 %dir %{_datadir}/opencode
 %{_datadir}/opencode/schema.json
+
+%files web
+%license LICENSE
+%{_bindir}/opencode-web

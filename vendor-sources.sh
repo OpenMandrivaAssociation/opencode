@@ -40,7 +40,10 @@ echo "==> bun install --ignore-scripts (JS only, host platform)"
 		--filter '@opencode-ai/tui' \
 		--filter '@opencode-ai/llm' \
 		--filter '@opencode-ai/codemode' \
-		--filter '@opencode-ai/http-recorder'
+		--filter '@opencode-ai/http-recorder' \
+		--filter '@opencode-ai/app' \
+		--filter '@opencode-ai/ui' \
+		--filter '@opencode-ai/session-ui'
 
 	# JS wrappers only — never pack ELF/PE/Mach-O natives or npm tool binaries.
 	find . -type f \( \
