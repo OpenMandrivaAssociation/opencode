@@ -45,7 +45,7 @@
 
 Name:		opencode
 Version:	1.18.22
-Release:	9
+Release:	10
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -287,8 +287,11 @@ done
 # --- Vite natives from source (never npm .node / never WASM) ---
 # JS loaders pick linux-$cpu-gnu vs linux-$cpu-musl by filename only.
 # The file we drop there is compiled against the host libc.
-find vite-natives -name rust-toolchain.toml -delete
-find vite-natives -name rust-toolchain -delete
+# Only the crate roots. cargo-vendor copies are in the checksum
+# files; deleting them makes cargo --offline refuse the tree.
+find vite-natives -path '*/cargo-vendor/*' -prune -o \
+	\( -name rust-toolchain.toml -o -name rust-toolchain \) \
+	-exec rm -f {} +
 # Drop hardcoded cross-linkers / nightly rustflags; use the builder's cc.
 rm -f vite-natives/rollup-4.60.4/rust/bindings_napi/.cargo/config.toml \
 	vite-natives/rollup-4.60.4/rust/bindings_wasm/.cargo/config.toml \
