@@ -287,7 +287,7 @@ if [ -f packages/app/vite.config.ts ]; then
 fi
 
 cd packages/opencode
-# TUI/CLI only (main package). FFF_LIBC/OPENTUI_LIBC come from %{_gnu}.
+# TUI/CLI only (main package). FFF_LIBC/OPENTUI_LIBC come from %%{_gnu}.
 bun --bun ./script/build.ts --single --skip-install --skip-embed-web-ui
 mkdir -p ../../dist-tui
 cp -a dist/opencode-*/bin/opencode ../../dist-tui/opencode
