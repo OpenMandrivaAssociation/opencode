@@ -8,7 +8,7 @@
 # (Rust) from source and stages the JS wrappers bun --compile needs.
 set -euo pipefail
 
-VERSION="${1:-1.18.22}"
+VERSION="${1:-1.18.33}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORKDIR=$(mktemp -d -p "${TMPDIR:-$HERE}")
 export TMPDIR="$WORKDIR"

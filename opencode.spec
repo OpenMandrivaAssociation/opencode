@@ -44,8 +44,8 @@
 %endif
 
 Name:		opencode
-Version:	1.18.22
-Release:	11
+Version:	1.18.33
+Release:	1
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT

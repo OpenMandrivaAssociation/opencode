@@ -1,7 +1,7 @@
 sources:
-  opencode-1.18.22.tar.gz: b7ea119253e067a784a14519ebb753d42a9527ef
-  opencode-1.18.22-node_modules.tar.xz: 23f90501ebb3037f344f5cf2ce45e30b91f050ed
-  models-dev-api.json: f6f52aecba8bedc2792ca768845a58161e472290
   opentui-zig-0.4.5.tar.xz: ecac35aa4021dd6f32b5549075a06a4335631623
   fff-0.9.4-with-vendor.tar.xz: 447a14dccb1578f5a5b28026ca15457ce7a49237
   opencode-vite-natives.tar.xz: a91c593fb99086d8e1cb84553957966f8e915bfb
+  opencode-1.18.33.tar.gz: daafc974fce41f53e0eebb5b6dfca366239e3f8e
+  opencode-1.18.33-node_modules.tar.xz: 0a1807f2516b6355357dc8c2f658234963193af6
+  models-dev-api.json: 9286ded7d257292c667ae4d2d713c1f51b120987
