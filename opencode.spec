@@ -66,6 +66,7 @@ Source5:	opencode-vite-natives.tar.xz
 BuildRequires:	bun
 BuildRequires:	nodejs
 BuildRequires:	clang
+BuildRequires:	libstdc++-devel
 BuildRequires:	zig
 BuildRequires:	rust
 BuildRequires:	cargo
@@ -210,8 +211,72 @@ FFF_SO="$PWD/fff-0.9.4/target/release/libfff_c.so"
 test -f "$FFF_SO"
 
 # --- libopentui.so from Zig 0.17-ported sources ---
+# zig -lc++ assembles its bundled libunwind via `zig -cc1as`. That
+# entry point, still the Aug 2026 zig linked to clang 23.1.2, reports
+# the target triple as "unknown". Yoga does not need zig's libc++:
+# compile it with the system c++ and link libstdc++ by path.
 (
 	cd opentui-zig-0.4.5
+	mkdir -p yoga-objs
+	: > yoga-objs/objects.list
+	while IFS= read -r src; do
+		[ -n "$src" ] || continue
+		obj="yoga-objs/${src%.cpp}.o"
+		mkdir -p "$(dirname "$obj")"
+		c++ -std=c++20 -fPIC -fexceptions -frtti -Ivendor/yoga \
+			-c "vendor/yoga/$src" -o "$obj"
+		echo "$obj" >> yoga-objs/objects.list
+	done <<'EOF'
+yoga/YGConfig.cpp
+yoga/YGEnums.cpp
+yoga/YGNode.cpp
+yoga/YGNodeLayout.cpp
+yoga/YGNodeStyle.cpp
+yoga/YGPixelGrid.cpp
+yoga/YGValue.cpp
+yoga/algorithm/AbsoluteLayout.cpp
+yoga/algorithm/Baseline.cpp
+yoga/algorithm/Cache.cpp
+yoga/algorithm/CalculateLayout.cpp
+yoga/algorithm/FlexLine.cpp
+yoga/algorithm/PixelGrid.cpp
+yoga/config/Config.cpp
+yoga/debug/AssertFatal.cpp
+yoga/debug/Log.cpp
+yoga/event/event.cpp
+yoga/node/LayoutResults.cpp
+yoga/node/Node.cpp
+EOF
+	ln -sfn "$(c++ -print-file-name=libstdc++.so)" yoga-objs/libstdc++.so
+	python - <<'PY'
+from pathlib import Path
+p = Path("build.zig")
+text = p.read_text()
+old_link = "\t\t.link_libcpp = true,\n"
+old_src = """\tmodule.addCSourceFiles(.{
+\t\t.root = yoga_dep.path(""),
+\t\t.files = &YOGA_CXX_SOURCES,
+\t\t.flags = &YOGA_CXX_FLAGS,
+\t});
+"""
+if old_link not in text or old_src not in text:
+    raise SystemExit("opentui build.zig yoga block not found")
+text = text.replace(old_link, "", 1)
+objs = [ln.strip() for ln in Path("yoga-objs/objects.list").read_text().splitlines() if ln.strip()]
+block = "\tconst yoga_objs = [_][]const u8{\n"
+for obj in objs:
+    block += f'\t\t"{obj}",\n'
+block += "\t};\n"
+block += "\tfor (yoga_objs) |obj| module.addObjectFile(b.path(obj));\n"
+block += '\tmodule.addObjectFile(b.path("yoga-objs/libstdc++.so"));\n'
+text = text.replace(old_src, block, 1)
+start = text.find("const YOGA_CXX_FLAGS")
+end = text.find("pub fn build")
+if start < 0 or end < 0:
+    raise SystemExit("opentui yoga const block not found")
+text = text[:start] + text[end:]
+p.write_text(text)
+PY
 	zig build -Doptimize=ReleaseFast
 )
 OPENTUI_SO=$(find opentui-zig-0.4.5 -name libopentui.so | head -n1)
