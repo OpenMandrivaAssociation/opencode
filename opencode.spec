@@ -217,6 +217,22 @@ test -f "$FFF_SO"
 # compile it with the system c++ and link libstdc++ by path.
 (
 	cd opentui-zig-0.4.5
+	# Zig 0.17 translate-c rejects clang's AMX-TF32 intrinsic
+	# (amxtf32intrin.h returns _tile1024i from a builtin it types as
+	# int). Miniaudio includes that header only for AVX2. SSE2 is enough.
+	python - <<'PY'
+from pathlib import Path
+guard = """/* Zig 0.17 translate-c rejects clang AMX-TF32 intrinsics. */
+#define MA_NO_AVX2
+#define MA_NO_AVX
+"""
+for name in ("miniaudio_shim.c", "miniaudio_includes.h"):
+    path = Path(name)
+    text = path.read_text()
+    if "MA_NO_AVX2" in text:
+        continue
+    path.write_text(guard + text)
+PY
 	mkdir -p yoga-objs
 	: > yoga-objs/objects.list
 	while IFS= read -r src; do
