@@ -44,8 +44,8 @@
 %endif
 
 Name:		opencode
-Version:	1.18.33
-Release:	2
+Version:	1.19.5
+Release:	1
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -57,8 +57,8 @@ Source1:	opencode-%{version}-node_modules.tar.xz
 Source2:	models-dev-api.json
 # OpenTUI 0.4.5 Zig core, ported to cooker Zig 0.17 (yoga + uucode + miniaudio)
 Source3:	opentui-zig-0.4.5.tar.xz
-# fff 0.9.4 crate sources + cargo-vendor (no rust-toolchain, no Windows import libs)
-Source4:	fff-0.9.4-with-vendor.tar.xz
+# fff 0.10.5 crate sources + cargo-vendor (no rust-toolchain, no Windows import libs)
+Source4:	fff-0.10.5-with-vendor.tar.xz
 # Rollup 4.60.4 / lightningcss 1.30.1 / tailwind oxide 4.1.11 /
 # esbuild 0.25.12 sources + cargo/go vendor. Compiled in %build.
 Source5:	opencode-vite-natives.tar.xz
@@ -116,8 +116,8 @@ opencode package.
 %prep
 %autosetup -p1 -n opencode-%{version}
 
-# Relax the bun version pin. We build with bun 1.4; upstream package.json
-# still says bun@1.3.14. Nix does the same substitution.
+# Relax the bun version pin. Cooker bun is 1.4.0; upstream package.json
+# asks for bun@1.4.4. Nix does the same substitution.
 sed -i \
 	's/throw new Error(`This script requires bun@/console.warn(`Warning: This script requires bun@/' \
 	packages/script/src/index.ts
@@ -182,7 +182,7 @@ mkdir -p "$CARGO_HOME"
 
 # --- libfff_c.so from vendored Rust ---
 (
-	cd fff-0.9.4
+	cd fff-0.10.5
 	# Never let a rust-toolchain.toml talk to rustup; ABF is offline.
 	rm -f rust-toolchain.toml
 	# winapi 0.3.9 lists unused Windows-gnu import-lib crates as
@@ -207,7 +207,7 @@ PY
 	# fights the winapi target-dep edit below.
 	cargo build --release -p fff-c --offline
 )
-FFF_SO="$PWD/fff-0.9.4/target/release/libfff_c.so"
+FFF_SO="$PWD/fff-0.10.5/target/release/libfff_c.so"
 test -f "$FFF_SO"
 
 # --- libopentui.so from Zig 0.17-ported sources ---
@@ -340,7 +340,7 @@ stage_fff() {
 	cat > "$dest/package.json" <<EOF
 {
   "name": "@ff-labs/fff-bin-linux-%{bun_cpu}-%{fff_libc}",
-  "version": "0.9.4",
+  "version": "0.10.5",
   "main": "libfff_c.so",
   "os": ["linux"],
   "cpu": ["%{bun_cpu}"],

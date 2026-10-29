@@ -8,7 +8,7 @@
 # (Rust) from source and stages the JS wrappers bun --compile needs.
 set -euo pipefail
 
-VERSION="${1:-1.18.33}"
+VERSION="${1:-1.19.5}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORKDIR=$(mktemp -d -p "${TMPDIR:-$HERE}")
 export TMPDIR="$WORKDIR"
@@ -43,7 +43,10 @@ echo "==> bun install --ignore-scripts (JS only, host platform)"
 		--filter '@opencode-ai/http-recorder' \
 		--filter '@opencode-ai/app' \
 		--filter '@opencode-ai/ui' \
-		--filter '@opencode-ai/session-ui'
+		--filter '@opencode-ai/session-ui' \
+		--filter '@opencode-ai/effect-drizzle-sqlite' \
+		--filter '@opencode-ai/effect-sqlite-node' \
+		--filter '@opencode-ai/client'
 
 	# JS wrappers only — never pack ELF/PE/Mach-O natives or npm tool binaries.
 	find . -type f \( \
@@ -159,5 +162,5 @@ echo "  $TGZ"
 echo "  $HERE/opencode-${VERSION}-node_modules.tar.xz"
 echo "  $HERE/models-dev-api.json"
 echo "  $HERE/opentui-zig-0.4.5.tar.xz"
-echo "  $HERE/fff-0.9.4-with-vendor.tar.xz"
+echo "  $HERE/fff-0.10.5-with-vendor.tar.xz"
 echo "  $HERE/opencode-vite-natives.tar.xz"
