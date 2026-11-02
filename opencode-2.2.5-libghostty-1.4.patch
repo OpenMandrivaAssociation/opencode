@@ -1,0 +1,254 @@
+diff -ruN a/packages/process-daemon/build.rs b/packages/process-daemon/build.rs
+--- a/packages/process-daemon/build.rs	2026-10-30 23:06:51.000000000 +0100
++++ b/packages/process-daemon/build.rs	2026-11-02 02:56:35.683953016 +0100
+@@ -1,151 +1,26 @@
+-use std::env;
+-use std::path::PathBuf;
+-use std::process::Command;
+-
++// Link the system libghostty-vt. Cooker ships Ghostty 1.4.0, built with
++// Zig 0.17. The upstream build.rs fetches a Zig 0.16 revision and builds
++// a static archive; that pin does not match this toolchain.
+ fn main() {
+-    println!("cargo:rerun-if-changed=build.rs");
+-    println!("cargo:rerun-if-changed=ghostty-revision");
+-    println!("cargo:rerun-if-changed=src/ghostty/ffi.rs");
+-    println!("cargo:rerun-if-env-changed=GHOSTTY_SOURCE_DIR");
+-    println!("cargo:rerun-if-env-changed=OPENCODE_ZIG_CPU");
+-
+-    let revision = include_str!("ghostty-revision").trim();
+-    assert_eq!(
+-        include_str!("src/ghostty/ffi.rs")
+-            .lines()
+-            .find_map(|line| line.strip_prefix("// Ghostty revision: ")),
+-        Some(revision),
+-        "regenerate the bindings with script/ghostty-bindings"
+-    );
+-    let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+-    let source = match env::var_os("GHOSTTY_SOURCE_DIR") {
+-        Some(path) => {
+-            let path = PathBuf::from(path);
+-            for relative in ["src", "pkg", "include", "build.zig", "build.zig.zon"] {
+-                println!("cargo:rerun-if-changed={}", path.join(relative).display());
+-            }
+-            path
+-        }
+-        None => {
+-            let path = out.join(format!("ghostty-{revision}"));
+-            if !path.join(".checkout-complete").exists() {
+-                if !path.join(".git").exists() {
+-                    run(Command::new("git").args(["init"]).arg(&path));
+-                }
+-                run(Command::new("git").arg("-C").arg(&path).args([
+-                    "fetch",
+-                    "--depth=1",
+-                    "https://github.com/ghostty-org/ghostty.git",
+-                    revision,
+-                ]));
+-                run(Command::new("git").arg("-C").arg(&path).args([
+-                    "-c",
+-                    "core.longpaths=true",
+-                    "checkout",
+-                    "--detach",
+-                    revision,
+-                ]));
+-                std::fs::write(path.join(".checkout-complete"), revision)
+-                    .expect("record Ghostty checkout");
+-            }
+-            path
+-        }
+-    };
+-
+-    // The checked-in declarations must match the native headers exactly.
+-    // Local overrides are useful for builds, but not for silently changing ABI.
+-    let head = Command::new("git")
+-        .arg("-C")
+-        .arg(&source)
+-        .args(["rev-parse", "HEAD"])
++    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
++    let output = std::process::Command::new("pkg-config")
++        .args(["--libs", "libghostty-vt"])
+         .output()
+-        .expect("read Ghostty revision");
++        .expect("run pkg-config");
+     assert!(
+-        head.status.success(),
+-        "GHOSTTY_SOURCE_DIR must be a Git checkout"
++        output.status.success(),
++        "pkg-config libghostty-vt failed: {}",
++        String::from_utf8_lossy(&output.stderr)
+     );
+-    assert_eq!(
+-        String::from_utf8(head.stdout)
+-            .expect("Ghostty revision UTF-8")
+-            .trim(),
+-        revision,
+-        "Ghostty headers and bindings are pinned together; regenerate before changing the revision"
+-    );
+-    run(Command::new("git").arg("-C").arg(&source).args([
+-        "-c",
+-        "core.longpaths=true",
+-        "diff",
+-        "--quiet",
+-        "HEAD",
+-        "--",
+-        "include/ghostty",
+-    ]));
+-
+-    let target = env::var("TARGET").expect("TARGET");
+-    let install = out.join("ghostty-install");
+-    let mut build = Command::new("zig");
+-    build.current_dir(&source).args([
+-        "build",
+-        "-Demit-lib-vt=true",
+-        "-Demit-xcframework=false",
+-        "-Dapp-runtime=none",
+-    ]);
+-    build.arg(if env::var("DEBUG").as_deref() == Ok("true") {
+-        "-Doptimize=Debug"
+-    } else if matches!(env::var("OPT_LEVEL").as_deref(), Ok("s" | "z")) {
+-        "-Doptimize=ReleaseSmall"
+-    } else {
+-        "-Doptimize=ReleaseFast"
+-    });
+-    // Release builds pin a portable CPU. Unix releases use script/release-bin/zig;
+-    // Windows cannot run that shell wrapper, so it sets this instead.
+-    if let Ok(cpu) = env::var("OPENCODE_ZIG_CPU") {
+-        build.arg(format!("-Dcpu={cpu}"));
+-    }
+-    build.arg("--prefix").arg(&install);
+-    build.arg("--cache-dir").arg(out.join("zig-cache"));
+-    if env::var("HOST").as_deref() != Ok(target.as_str()) {
+-        let zig_target = match target.as_str() {
+-            "x86_64-unknown-linux-gnu" => "x86_64-linux-gnu",
+-            "aarch64-unknown-linux-gnu" => "aarch64-linux-gnu",
+-            "x86_64-unknown-linux-musl" => "x86_64-linux-musl",
+-            "aarch64-unknown-linux-musl" => "aarch64-linux-musl",
+-            "x86_64-apple-darwin" => "x86_64-macos",
+-            "aarch64-apple-darwin" => "aarch64-macos",
+-            "x86_64-pc-windows-msvc" => "x86_64-windows-msvc",
+-            "aarch64-pc-windows-msvc" => "aarch64-windows-msvc",
+-            _ => panic!("unsupported Ghostty target: {target}"),
+-        };
+-        build.arg(format!("-Dtarget={zig_target}"));
+-    }
+-    run(&mut build);
+-
+-    let library = install.join("lib");
+-    let windows = target.contains("windows");
+-    assert!(
+-        library
+-            .join(if windows {
+-                "ghostty-vt-static.lib"
+-            } else {
+-                "libghostty-vt.a"
+-            })
+-            .is_file()
+-    );
+-    println!("cargo:rustc-link-search=native={}", library.display());
+-    // ghostty-vt.lib is the Windows DLL import library, not the static archive.
+-    println!(
+-        "cargo:rustc-link-lib={}",
+-        if windows {
+-            "static:+verbatim=ghostty-vt-static.lib"
+-        } else {
+-            "static=ghostty-vt"
++    let libs = String::from_utf8(output.stdout).expect("pkg-config output is utf-8");
++    let mut linked = false;
++    for token in libs.split_whitespace() {
++        if let Some(path) = token.strip_prefix("-L") {
++            println!("cargo:rustc-link-search=native={path}");
++        } else if let Some(name) = token.strip_prefix("-l") {
++            println!("cargo:rustc-link-lib=dylib={name}");
++            linked = true;
+         }
+-    );
+-}
+-
+-fn run(command: &mut Command) {
+-    let status = command
+-        .status()
+-        .unwrap_or_else(|error| panic!("{command:?}: {error}"));
+-    assert!(status.success(), "{command:?} failed: {status}");
++    }
++    assert!(linked, "pkg-config libghostty-vt did not name a library");
+ }
+diff -ruN a/packages/process-daemon/src/ghostty/ffi.rs b/packages/process-daemon/src/ghostty/ffi.rs
+--- a/packages/process-daemon/src/ghostty/ffi.rs	2026-10-30 23:06:51.000000000 +0100
++++ b/packages/process-daemon/src/ghostty/ffi.rs	2026-11-02 03:04:03.065428102 +0100
+@@ -426,6 +426,9 @@
+ pub const GHOSTTY_TERMINAL_OPT_GLYPH_PROTOCOL: GhosttyTerminalOption = 24;
+ pub const GHOSTTY_TERMINAL_OPT_PWD_CHANGED: GhosttyTerminalOption = 25;
+ pub const GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE: GhosttyTerminalOption = 26;
++// Appended by libghostty 1.4. Existing values above are unchanged.
++pub const GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES: GhosttyTerminalOption = 27;
++pub const GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES: GhosttyTerminalOption = 28;
+ pub const GHOSTTY_TERMINAL_OPT_MAX_VALUE: GhosttyTerminalOption = 2147483647;
+ pub type GhosttyTerminalOption = ::std::os::raw::c_uint;
+ pub const GHOSTTY_TERMINAL_DATA_INVALID: GhosttyTerminalData = 0;
+@@ -465,10 +468,15 @@
+ pub const GHOSTTY_TERMINAL_DATA_MAX_VALUE: GhosttyTerminalData = 2147483647;
+ pub type GhosttyTerminalData = ::std::os::raw::c_uint;
+ unsafe extern "C" {
++    // libghostty 1.4 takes cols and rows. Scrollback is
++    // GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, set after creation.
++    // The pinned revision passed GhosttyTerminalOptions by value; on
++    // x86-64 that put max_scrollback in the rows register.
+     pub fn ghostty_terminal_new(
+         allocator: *const GhosttyAllocator,
+         terminal: *mut GhosttyTerminal,
+-        options: GhosttyTerminalOptions,
++        cols: u16,
++        rows: u16,
+     ) -> GhosttyResult;
+ }
+ unsafe extern "C" {
+diff -ruN a/packages/process-daemon/src/ghostty/mod.rs b/packages/process-daemon/src/ghostty/mod.rs
+--- a/packages/process-daemon/src/ghostty/mod.rs	2026-10-30 23:06:51.000000000 +0100
++++ b/packages/process-daemon/src/ghostty/mod.rs	2026-11-02 03:04:16.323588049 +0100
+@@ -43,17 +43,9 @@
+             "terminal dimensions must be positive"
+         );
+         let mut raw = ptr::null_mut();
+-        // SAFETY: options match the pinned C header; NULL selects Ghostty's allocator.
++        // SAFETY: cols and rows are positive. NULL selects Ghostty's allocator.
+         check(unsafe {
+-            ffi::ghostty_terminal_new(
+-                ptr::null(),
+-                &mut raw,
+-                ffi::GhosttyTerminalOptions {
+-                    cols: options.cols,
+-                    rows: options.rows,
+-                    max_scrollback: options.max_scrollback,
+-                },
+-            )
++            ffi::ghostty_terminal_new(ptr::null(), &mut raw, options.cols, options.rows)
+         })?;
+         let terminal = Self {
+             raw: NonNull::new(raw).context("Ghostty returned a null terminal")?,
+@@ -61,11 +53,23 @@
+             _actor: PhantomData,
+         };
+ 
+-        // SAFETY: userdata is an Rc-derived shared pointer retained until after terminal_free.
+-        // These callbacks only copy responses/mark a title change; they never reenter Ghostty.
++        // SAFETY: the handle is owned by `terminal`, so a failed set still frees it.
++        // libghostty 1.4 defaults to a 10KB scrollback byte cap and no line cap.
++        // The API this crate targets is a line cap and no byte cap.
++        // These callbacks only copy responses or mark a title change; they never reenter Ghostty.
+         unsafe {
+             check(ffi::ghostty_terminal_set(
+                 raw,
++                ffi::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
++                ptr::null(),
++            ))?;
++            check(ffi::ghostty_terminal_set(
++                raw,
++                ffi::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
++                ptr::from_ref(&options.max_scrollback).cast(),
++            ))?;
++            check(ffi::ghostty_terminal_set(
++                raw,
+                 ffi::GHOSTTY_TERMINAL_OPT_USERDATA,
+                 terminal.effects.userdata(),
+             ))?;

@@ -12,17 +12,19 @@
 # Vite web frontend embedded (offline `opencode web`). Desktop/Electron
 # is out of scope.
 #
-# opencode-pty (persistent terminals) links Ghostty lib-vt, which is
-# pinned to Zig 0.16. Cooker Zig is 0.17, so that binary is not built.
-# The CLI looks for `opencode-pty` on PATH. Ordinary PTYs use bun-pty.
+# opencode-pty (persistent terminals) links the system libghostty-vt,
+# the same library kwi uses (Ghostty 1.4.0). Upstream build.rs fetches
+# a Zig 0.16 revision and builds a static archive. Patch0 links with
+# pkg-config instead and calls the 1.4 constructor. The CLI looks for
+# `opencode-pty` on PATH. Ordinary PTYs use bun-pty.
 #
 # First time, on a networked machine (after bun is installed):
 #   ./vendor-sources.sh
 #   abb store opencode-VERSION.tar.gz opencode-VERSION-node_modules.tar.xz \
 #     models-dev-api.json opentui-zig-0.8.0.tar.xz \
-#     fff-0.10.5-with-vendor.tar.xz opencode-vite-natives.tar.xz
+#     fff-0.10.5-with-vendor.tar.xz opencode-vite-natives.tar.xz \
+#     opencode-pty-vendor.tar.xz
 # Remove a replaced key from .abf.yml before abb store reuses its name.
-# Do not store opencode-pty-vendor.tar.xz. Ghostty lib-vt is Zig 0.16.
 
 # bun --compile emits a standalone binary; there is no debugsource.
 %define debug_package %{nil}
@@ -54,7 +56,7 @@
 
 Name:		opencode
 Version:	2.2.5
-Release:	1
+Release:	2
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -76,6 +78,9 @@ Source4:	fff-0.10.5-with-vendor.tar.xz
 # workbox-build loads Rollup. Vite loads lightningcss 1.33.
 # @tailwindcss/node loads 1.32.
 Source5:	opencode-vite-natives.tar.xz
+# Rust crates for packages/process-daemon. Not Ghostty source.
+Source6:	opencode-pty-vendor.tar.xz
+Patch0:	opencode-2.2.5-libghostty-1.4.patch
 
 BuildRequires:	bun
 BuildRequires:	nodejs
@@ -89,12 +94,15 @@ BuildRequires:	git
 BuildRequires:	make
 # Rolldown and Rollup build mimalloc with the cmake crate.
 BuildRequires:	cmake
+# opencode-pty. The devel package requires pkg-config and libghostty-vt.
+BuildRequires:	pkgconfig(libghostty-vt)
 
 # Runtime: the compiled binary shells out to rg for codebase search.
 # OpenMandriva's rg is the grep-based C++ ripgrep implementation
 # (ripgrep-compatible CLI, including --json / --hidden / --glob).
 Requires:	rg
 Requires:	git
+Requires:	%{name}-pty = %{EVRD}
 
 # fzf is used by some picker flows; available in cooker.
 Requires:	fzf
@@ -110,6 +118,7 @@ host libc. It does not ship prebuilt npm ELF or .node files.
 
 The web frontend is not embedded here: `opencode web` proxies to
 https://app.opencode.ai. For an offline UI, install opencode-web.
+Persistent terminals use opencode-pty.
 
 %package web
 Summary:	OpenCode CLI with embedded web frontend
@@ -117,6 +126,7 @@ Group:		Development/Other
 Requires:	rg
 Requires:	git
 Requires:	fzf
+Requires:	%{name}-pty = %{EVRD}
 
 %description web
 Same OpenCode CLI as the main package, but the Vite web frontend is
@@ -124,7 +134,16 @@ compiled in. `opencode-web web` serves that UI locally and does not
 need https://app.opencode.ai.
 
 This is a standalone bun --compile binary. It does not require the
-opencode package.
+opencode package. Persistent terminals use opencode-pty.
+
+%package pty
+Summary:	Persistent terminal daemon for OpenCode
+Group:		Development/Other
+
+%description pty
+opencode-pty keeps OpenCode terminals alive across client reconnects.
+It links the system libghostty-vt (Ghostty 1.4.0), the same library
+kwi uses. The OpenCode CLIs exec `opencode-pty` from PATH.
 
 %prep
 %autosetup -p1 -n opencode-%{version}
@@ -164,10 +183,10 @@ if os.environ["OPENCODE_LIBC_FAMILY"] == "musl":
 	p.write_text(text)
 PY
 
-# Ghostty lib-vt is pinned to Zig 0.16 (revision in
-# packages/process-daemon/ghostty-revision). Cooker Zig is 0.17, so
-# there is no opencode-pty binary. Missing it must not fail the CLI
-# build; persistent terminals then look for opencode-pty on PATH.
+# Do not embed opencode-pty. A blob would hide DT_NEEDED from the
+# ELF generator, so this package would not require libghostty-vt.
+# Missing the npm package must not fail the CLI build. Both CLIs
+# then exec `opencode-pty` from PATH.
 python - <<'PY'
 from pathlib import Path
 p = Path("packages/cli/script/opencode-pty.ts")
@@ -207,6 +226,12 @@ find node_modules packages -type f ! -name '*.js' ! -name '*.ts' ! -name '*.json
 	xargs -0 -r file -N |
 	awk -F': ' '$2 ~ /^(ELF|PE32|Mach-O|MS-DOS)/ { print $1 }' |
 	xargs -r rm -f
+
+# Rust vendor for opencode-pty. Extract after the native sweep: the
+# vendor contains winapi import libraries whose checksums must stay
+# intact. Never let rust-toolchain.toml talk to rustup.
+tar -C packages/process-daemon -xf %{S:6}
+rm -f packages/process-daemon/rust-toolchain.toml
 
 install -m0644 %{S:2} models-dev-api.json
 cp -a models-dev-api.json packages/core/src/models-dev/snapshot.txt
@@ -488,6 +513,13 @@ if [ ! -e packages/cli/node_modules/prettier ]; then
 	ln -s "../../../$prett/node_modules/prettier" packages/cli/node_modules/prettier
 fi
 
+# --- opencode-pty against system libghostty-vt ---
+(
+	cd packages/process-daemon
+	cargo build --release --offline --locked
+)
+test -f packages/process-daemon/target/release/opencode-pty
+
 cd packages/cli
 # TUI/CLI only. A second pass embeds packages/app/dist (opencode-web).
 bun --bun ./script/build.ts --single --skip-install --skip-web-ui
@@ -506,6 +538,8 @@ install -Dm0755 dist-web/opencode \
 	%{buildroot}%{_bindir}/opencode-web
 install -Dm0644 packages/cli/schema.json \
 	%{buildroot}%{_datadir}/opencode/schema.json
+install -Dm0755 packages/process-daemon/target/release/opencode-pty \
+	%{buildroot}%{_bindir}/opencode-pty
 
 %check
 export HOME=$(mktemp -d)
@@ -514,6 +548,11 @@ export OPENCODE_DISABLE_AUTOUPDATE=1
 export PATH="%{buildroot}%{_bindir}:/usr/bin:$PATH"
 opencode --version
 opencode-web --version
+opencode-pty --version | grep -q 'opencode-pty 0.4.0 (protocol 7)'
+
+%files pty
+%license packages/process-daemon/LICENSE
+%{_bindir}/opencode-pty
 
 %files
 %license LICENSE

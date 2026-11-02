@@ -5,8 +5,8 @@
 # --omit=optional). Do not pull npm optional native packages
 # (@opentui/core-linux-*, @ff-labs/fff-bin-*, @rolldown/binding-*, …).
 # Those .so/.node files are prebuilts. %build compiles libopentui.so (Zig),
-# libfff_c.so (Rust), the rolldown/lightningcss/oxide natives, and
-# @parcel/watcher from source.
+# libfff_c.so (Rust), opencode-pty (Rust, system libghostty-vt), the
+# rolldown/lightningcss/oxide natives, and @parcel/watcher from source.
 #
 # fff 0.10.5 and the Zig 0.17 port of OpenTUI 0.8.0 are packed separately
 # (fff-0.10.5-with-vendor.tar.xz, opentui-zig-0.8.0.tar.xz). This script
@@ -184,9 +184,16 @@ PY
 )
 tar -C "$WORKDIR" -cJf "$HERE/opencode-vite-natives.tar.xz" vite-natives
 
-# opencode-pty (persistent terminals) links Ghostty lib-vt, pinned to Zig
-# 0.16. Cooker Zig is 0.17, so that binary is not packaged. The CLI looks
-# for `opencode-pty` on PATH; ordinary PTYs use bun-pty.
+# opencode-pty links system libghostty-vt. Vendor the Rust crates only.
+# Do not fetch Ghostty; Patch0 replaces build.rs.
+echo "==> cargo vendor opencode-pty"
+(
+	cd "$SRC/packages/process-daemon"
+	rm -rf cargo-vendor .cargo
+	rm -f rust-toolchain.toml
+	cargo vendor --locked cargo-vendor
+)
+tar -C "$SRC/packages/process-daemon" -cJf "$HERE/opencode-pty-vendor.tar.xz" .cargo cargo-vendor
 
 echo
 echo "Store these with abb store (remove replaced keys from .abf.yml first):"
@@ -196,3 +203,4 @@ echo "  $HERE/models-dev-api.json"
 echo "  $HERE/opentui-zig-0.8.0.tar.xz"
 echo "  $HERE/fff-0.10.5-with-vendor.tar.xz"
 echo "  $HERE/opencode-vite-natives.tar.xz"
+echo "  $HERE/opencode-pty-vendor.tar.xz"

@@ -5,3 +5,4 @@ sources:
   models-dev-api.json: 90140e3711333c4a0954b892b934203ea3a24316
   opentui-zig-0.8.0.tar.xz: e92035efc711662288046bbc474c2f19fe730566
   opencode-vite-natives.tar.xz: d7ada78555ea3dc187dcf52f2f240c2e4009bcef
+  opencode-pty-vendor.tar.xz: 69db08f58b3089d0cdc2ab81e7f97645e81e579c
