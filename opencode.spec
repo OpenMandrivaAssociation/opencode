@@ -87,6 +87,8 @@ BuildRequires:	cargo
 BuildRequires:	python
 BuildRequires:	git
 BuildRequires:	make
+# Rolldown and Rollup build mimalloc with the cmake crate.
+BuildRequires:	cmake
 
 # Runtime: the compiled binary shells out to rg for codebase search.
 # OpenMandriva's rg is the grep-based C++ ripgrep implementation
