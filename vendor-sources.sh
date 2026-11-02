@@ -1,14 +1,22 @@
 #!/bin/bash
-# Produce OpenCode's offline sources. Requires a working `bun`.
+# Produce OpenCode's offline sources. Requires a working `bun`, cargo, and git.
 #
-# Rule: no prebuilt binaries. bun install is JS-only (--ignore-scripts).
-# Do not use --os=linux --cpu=* to pull npm optional native packages
-# (@opentui/core-linux-*, @ff-labs/fff-bin-*). Those .so files are
-# prebuilts. %build compiles libopentui.so (Zig) and libfff_c.so
-# (Rust) from source and stages the JS wrappers bun --compile needs.
+# Rule: no prebuilt binaries. bun install is JS-only (--ignore-scripts,
+# --omit=optional). Do not pull npm optional native packages
+# (@opentui/core-linux-*, @ff-labs/fff-bin-*, @rolldown/binding-*, …).
+# Those .so/.node files are prebuilts. %build compiles libopentui.so (Zig),
+# libfff_c.so (Rust), the rolldown/lightningcss/oxide natives, and
+# @parcel/watcher from source.
+#
+# fff 0.10.5 and the Zig 0.17 port of OpenTUI 0.8.0 are packed separately
+# (fff-0.10.5-with-vendor.tar.xz, opentui-zig-0.8.0.tar.xz). This script
+# does not regenerate them.
+#
+# Put TMPDIR on a real disk. /tmp is often a small tmpfs, and node_modules
+# plus the Rolldown vendor tree do not fit there.
 set -euo pipefail
 
-VERSION="${1:-1.19.5}"
+VERSION="${1:-2.2.5}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORKDIR=$(mktemp -d -p "${TMPDIR:-$HERE}")
 export TMPDIR="$WORKDIR"
@@ -28,25 +36,11 @@ echo "==> bun install --ignore-scripts (JS only, host platform)"
 	cd "$SRC"
 	export HOME="$WORKDIR/home"
 	mkdir -p "$HOME"
-	bun install --frozen-lockfile --ignore-scripts --no-progress \
-		--filter opencode \
-		--filter '@opencode-ai/core' \
-		--filter '@opencode-ai/script' \
-		--filter '@opencode-ai/sdk' \
-		--filter '@opencode-ai/plugin' \
-		--filter '@opencode-ai/protocol' \
-		--filter '@opencode-ai/schema' \
-		--filter '@opencode-ai/server' \
-		--filter '@opencode-ai/tui' \
-		--filter '@opencode-ai/llm' \
-		--filter '@opencode-ai/codemode' \
-		--filter '@opencode-ai/http-recorder' \
-		--filter '@opencode-ai/app' \
-		--filter '@opencode-ai/ui' \
-		--filter '@opencode-ai/session-ui' \
-		--filter '@opencode-ai/effect-drizzle-sqlite' \
-		--filter '@opencode-ai/effect-sqlite-node' \
-		--filter '@opencode-ai/client'
+	# cli is the TUI binary. app is the embedded web UI. Workspace
+	# dependencies come along. Optional deps are the prebuilt natives.
+	bun install --frozen-lockfile --ignore-scripts --omit=optional --no-progress \
+		--filter '@opencode/cli' \
+		--filter '@opencode/app'
 
 	# JS wrappers only — never pack ELF/PE/Mach-O natives or npm tool binaries.
 	find . -type f \( \
@@ -54,60 +48,97 @@ echo "==> bun install --ignore-scripts (JS only, host platform)"
 		-name '*.exe' -o -name '*.a' -o -name '*.bare' -o \
 		-name 'esbuild' -o -name 'turbo' -o -name 'oxlint' \
 		\) -delete
-	find . -type f \( -name 'sst' -o -name 'rollup' -o -name 'lightningcss' \) -delete
+	find . -type f \( -name 'sst' -o -name 'rollup' -o -name 'lightningcss' -o -name 'rolldown' \) -delete
 	# Catch natives that do not use a conventional extension (xsel, tsgo, …).
 	find . -type f ! -name '*.js' ! -name '*.ts' ! -name '*.json' ! -name '*.md' \
 		! -name '*.map' ! -name '*.wasm' -print0 |
 		xargs -0 -r file -N |
 		awk -F': ' '$2 ~ /^(ELF|PE32|Mach-O|MS-DOS)/ { print $1 }' |
 		xargs -r rm -f
-	# Drop leftover optional platform packages entirely; %build recreates
-	# the host-arch wrappers next to the from-source .so.
+	# Drop leftover platform packages; %build recreates the host one
+	# next to the library it just compiled.
 	find . -type d \( \
 		-name 'core-linux-*' -o \
 		-name 'core-darwin-*' -o \
 		-name 'core-win32-*' -o \
-		-name 'fff-bin-*' \
+		-name 'fff-bin-*' -o \
+		-name 'watcher-linux-*' -o \
+		-name 'watcher-darwin-*' -o \
+		-name 'watcher-win32-*' -o \
+		-name 'pty-linux-*' -o \
+		-name 'pty-darwin-*' -o \
+		-name 'pty-win32-*' -o \
+		-name 'node-pty-*' -o \
+		-name 'ffi-rs-*' -o \
+		-name 'binding-linux-*' -o \
+		-name 'binding-darwin-*' -o \
+		-name 'binding-win32-*' -o \
+		-name 'binding-android-*' -o \
+		-name 'binding-freebsd-*' -o \
+		-name 'oxide-linux-*' -o \
+		-name 'oxide-darwin-*' -o \
+		-name 'oxide-win32-*' -o \
+		-name 'rollup-linux-*' -o \
+		-name 'rollup-darwin-*' -o \
+		-name 'rollup-win32-*' \
 		\) -prune -exec rm -rf {} +
 
-	tar -cJf "$HERE/opencode-${VERSION}-node_modules.tar.xz" \
-		node_modules \
-		packages/*/node_modules \
-		packages/*/*/node_modules \
-		2>/dev/null || \
-	tar -cJf "$HERE/opencode-${VERSION}-node_modules.tar.xz" node_modules
+	# Isolated installs keep real modules under node_modules/.bun and
+	# only symlinks under packages/*/node_modules. An unmatched glob
+	# must not drop those symlinks: bun cannot resolve @opentui/core
+	# from packages/cli without them.
+	shopt -s nullglob
+	paths=(node_modules packages/*/node_modules packages/*/*/node_modules)
+	tar -cf - "${paths[@]}" | xz -T0 -c > "$HERE/opencode-${VERSION}-node_modules.tar.xz"
 )
 
-echo "==> Vite natives from source (rollup / lightningcss / oxide / esbuild)"
-# No npm .node, no WASM. %build compiles these against the host libc.
+echo "==> models.dev catalog snapshot"
+# Same trim and validation the release build uses. The URL is
+# https://models.opencode.ai/experimental/v2.0/api.json?type=chat,decision,image
+(
+	cd "$SRC/packages/core"
+	bun ./script/update-models-snapshot.ts "$HERE/models-dev-api.json"
+)
+
+echo "==> Vite natives from source (rolldown / rollup / lightningcss / oxide)"
+# No npm .node, no WASM fallback. %build compiles these against the host libc.
+# Vite 8 bundles the web UI with Rolldown. vite-plugin-pwa's workbox-build
+# still loads Rollup 4.62. Tailwind 4.3.3 loads lightningcss 1.32.0
+# (@tailwindcss/node) and Vite itself loads 1.33.0.
 NAT="$WORKDIR/vite-natives"
 mkdir -p "$NAT"
 (
 	cd "$WORKDIR"
+	git clone --depth 1 --branch v1.2.5 https://github.com/rolldown/rolldown.git "$NAT/rolldown-1.2.5"
 	curl -fL -o rollup.tgz \
-		https://github.com/rollup/rollup/archive/v4.60.4/rollup-4.60.4.tar.gz
+		https://github.com/rollup/rollup/archive/v4.62.4/rollup-4.62.4.tar.gz
 	curl -fL -o lightningcss.tgz \
-		https://github.com/parcel-bundler/lightningcss/archive/refs/tags/v1.30.1.tar.gz
+		https://github.com/parcel-bundler/lightningcss/archive/refs/tags/v1.33.0.tar.gz
+	curl -fL -o lightningcss132.tgz \
+		https://github.com/parcel-bundler/lightningcss/archive/refs/tags/v1.32.0.tar.gz
 	curl -fL -o tailwind.tgz \
-		https://github.com/tailwindlabs/tailwindcss/archive/refs/tags/v4.1.11.tar.gz
-	curl -fL -o esbuild.tgz \
-		https://github.com/evanw/esbuild/archive/v0.25.12/esbuild-0.25.12.tar.gz
+		https://github.com/tailwindlabs/tailwindcss/archive/refs/tags/v4.3.3.tar.gz
 	tar -xzf rollup.tgz -C "$NAT"
 	tar -xzf lightningcss.tgz -C "$NAT"
+	tar -xzf lightningcss132.tgz -C "$NAT"
 	tar -xzf tailwind.tgz -C "$NAT"
-	tar -xzf esbuild.tgz -C "$NAT"
 
-	# Nightly rustflags break cooker rustc; drop them.
-	rm -f "$NAT/rollup-4.60.4/rust/bindings_napi/.cargo/config.toml"
-	find "$NAT" -maxdepth 3 \( -name rust-toolchain -o -name rust-toolchain.toml \) -delete
+	# Nightly/pinned rustflags break cooker rustc; drop them.
+	find "$NAT" \( -name rust-toolchain -o -name rust-toolchain.toml \) -delete
+	rm -f "$NAT/rollup-4.62.4/rust/bindings_napi/.cargo/config.toml" \
+		"$NAT/rollup-4.62.4/rust/bindings_wasm/.cargo/config.toml"
+	rm -rf "$NAT/rolldown-1.2.5/.git"
 
-	( cd "$NAT/rollup-4.60.4/rust" && mkdir -p .cargo && \
+	( cd "$NAT/rolldown-1.2.5" && mkdir -p .cargo && \
 		cargo vendor --locked cargo-vendor > .cargo/config.toml )
-	( cd "$NAT/lightningcss-1.30.1" && mkdir -p .cargo && \
+	( cd "$NAT/lightningcss-1.33.0" && mkdir -p .cargo && \
 		cargo vendor --locked cargo-vendor > .cargo/config.toml )
-	( cd "$NAT/tailwindcss-4.1.11" && mkdir -p .cargo && \
+	( cd "$NAT/lightningcss-1.32.0" && mkdir -p .cargo && \
 		cargo vendor --locked cargo-vendor > .cargo/config.toml )
-	( cd "$NAT/esbuild-0.25.12" && go mod vendor )
+	( cd "$NAT/tailwindcss-4.3.3" && mkdir -p .cargo && \
+		cargo vendor --locked cargo-vendor > .cargo/config.toml )
+	( cd "$NAT/rollup-4.62.4/rust" && mkdir -p .cargo && \
+		cargo vendor --locked cargo-vendor > .cargo/config.toml )
 
 	# Do not ship Windows import libs / DLLs. Stub napi-build
 	# include_bytes so Linux cargo still compiles windows.rs.
@@ -134,7 +165,6 @@ for win in list(root.rglob("napi-build/src/windows.rs")) + list(root.rglob("napi
 		if not p.exists():
 			del data["files"][k]
 	csum.write_text(json.dumps(data, separators=(",", ":")))
-# Drop checksum entries for deleted binaries.
 for csum in root.rglob(".cargo-checksum.json"):
 	data = json.loads(csum.read_text())
 	changed = False
@@ -146,21 +176,23 @@ for csum in root.rglob(".cargo-checksum.json"):
 		csum.write_text(json.dumps(data, separators=(",", ":")))
 PY
 
-	rm -rf "$NAT/rollup-4.60.4/"{docs,examples,test,src,cli,browser,wasm,.github} \
-		"$NAT/lightningcss-1.30.1/"{website,.github} \
-		"$NAT/tailwindcss-4.1.11/"{packages,playgrounds,integrations,.github} \
-		"$NAT/esbuild-0.25.12/"{npm,lib,.github}
+	rm -rf "$NAT/rolldown-1.2.5/"{docs,examples,.github} \
+		"$NAT/rollup-4.62.4/"{docs,examples,test,src,cli,browser,wasm,.github} \
+		"$NAT/lightningcss-1.33.0/"{website,.github} \
+		"$NAT/lightningcss-1.32.0/"{website,.github} \
+		"$NAT/tailwindcss-4.3.3/"{playgrounds,integrations,.github}
 )
 tar -C "$WORKDIR" -cJf "$HERE/opencode-vite-natives.tar.xz" vite-natives
 
-echo "==> models.dev API snapshot"
-curl -fL -o "$HERE/models-dev-api.json" "https://models.dev/api.json"
+# opencode-pty (persistent terminals) links Ghostty lib-vt, pinned to Zig
+# 0.16. Cooker Zig is 0.17, so that binary is not packaged. The CLI looks
+# for `opencode-pty` on PATH; ordinary PTYs use bun-pty.
 
 echo
-echo "Store these with abb store:"
+echo "Store these with abb store (remove replaced keys from .abf.yml first):"
 echo "  $TGZ"
 echo "  $HERE/opencode-${VERSION}-node_modules.tar.xz"
 echo "  $HERE/models-dev-api.json"
-echo "  $HERE/opentui-zig-0.4.5.tar.xz"
+echo "  $HERE/opentui-zig-0.8.0.tar.xz"
 echo "  $HERE/fff-0.10.5-with-vendor.tar.xz"
 echo "  $HERE/opencode-vite-natives.tar.xz"

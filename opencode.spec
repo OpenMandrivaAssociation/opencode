@@ -1,19 +1,28 @@
 # OpenCode CLI. Production artifact is a bun --compile standalone binary.
 # node_modules is vendored (see vendor-sources.sh) because ABF has no
-# network. Native libraries (libopentui.so, libfff_c.so) are compiled
-# from source in %build — we never ship npm prebuilt .so/.node files.
+# network. Native code is compiled in %%build. npm prebuilt ELF and
+# .node files are not shipped. Photon and tree-sitter stay as the
+# WebAssembly modules those packages import.
 #
 # Depends on bun, which is the hard package — see ../bun/bun.spec.
+# Cooker bun is 1.4.0; upstream asks for bun@1.4.4. %%prep relaxes that
+# check the same way nix does.
 #
 # Main package is the TUI/CLI. opencode-web is the same CLI with the
 # Vite web frontend embedded (offline `opencode web`). Desktop/Electron
-# is still out of scope.
+# is out of scope.
+#
+# opencode-pty (persistent terminals) links Ghostty lib-vt, which is
+# pinned to Zig 0.16. Cooker Zig is 0.17, so that binary is not built.
+# The CLI looks for `opencode-pty` on PATH. Ordinary PTYs use bun-pty.
 #
 # First time, on a networked machine (after bun is installed):
 #   ./vendor-sources.sh
-#   abb store opencode-*.tar.gz opencode-*-node_modules.tar.xz \
-#     models-dev-api.json opentui-zig-*.tar.xz fff-*-with-vendor.tar.xz \
-#     opencode-vite-natives.tar.xz
+#   abb store opencode-VERSION.tar.gz opencode-VERSION-node_modules.tar.xz \
+#     models-dev-api.json opentui-zig-0.8.0.tar.xz \
+#     fff-0.10.5-with-vendor.tar.xz opencode-vite-natives.tar.xz
+# Remove a replaced key from .abf.yml before abb store reuses its name.
+# Do not store opencode-pty-vendor.tar.xz. Ghostty lib-vt is Zig 0.16.
 
 # bun --compile emits a standalone binary; there is no debugsource.
 %define debug_package %{nil}
@@ -44,23 +53,28 @@
 %endif
 
 Name:		opencode
-Version:	1.19.5
+Version:	2.2.5
 Release:	1
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
 URL:		https://opencode.ai/
 Source0:	https://github.com/anomalyco/opencode/archive/v%{version}/opencode-%{version}.tar.gz
-# bun install --frozen-lockfile --ignore-scripts, then strip all natives
+# bun install --frozen-lockfile --ignore-scripts, then strip all natives.
+# Includes packages/*/node_modules symlinks into node_modules/.bun.
 Source1:	opencode-%{version}-node_modules.tar.xz
-# Snapshot of https://models.dev/api.json — fetched at vendor time, not build time
+# Trimmed models catalog from packages/core/script/update-models-snapshot.ts
+# (https://models.opencode.ai). Fetched at vendor time, not build time.
 Source2:	models-dev-api.json
-# OpenTUI 0.4.5 Zig core, ported to cooker Zig 0.17 (yoga + uucode + miniaudio)
-Source3:	opentui-zig-0.4.5.tar.xz
+# OpenTUI 0.8.0 Zig core, ported to cooker Zig 0.17 (yoga + uucode + ghostty)
+Source3:	opentui-zig-0.8.0.tar.xz
 # fff 0.10.5 crate sources + cargo-vendor (no rust-toolchain, no Windows import libs)
 Source4:	fff-0.10.5-with-vendor.tar.xz
-# Rollup 4.60.4 / lightningcss 1.30.1 / tailwind oxide 4.1.11 /
-# esbuild 0.25.12 sources + cargo/go vendor. Compiled in %build.
+# Rolldown 1.2.5 / Rollup 4.62.4 / lightningcss 1.33.0 and 1.32.0 /
+# tailwind oxide 4.3.3 sources + cargo vendor. Compiled in %%build for
+# the embedded web UI. Vite 8 bundles with Rolldown. vite-plugin-pwa's
+# workbox-build loads Rollup. Vite loads lightningcss 1.33.
+# @tailwindcss/node loads 1.32.
 Source5:	opencode-vite-natives.tar.xz
 
 BuildRequires:	bun
@@ -70,9 +84,6 @@ BuildRequires:	libstdc++-devel
 BuildRequires:	zig
 BuildRequires:	rust
 BuildRequires:	cargo
-BuildRequires:	golang
-BuildRequires:	cmake
-BuildRequires:	pkgconfig(libuv)
 BuildRequires:	python
 BuildRequires:	git
 BuildRequires:	make
@@ -90,10 +101,10 @@ Requires:	fzf
 OpenCode is an open-source AI coding agent. It talks to any LLM provider
 (or a local model) and edits a project from a terminal UI.
 
-This package builds the official bun-compiled CLI from source. Native
-TUI/search/web-tool libraries are compiled from their Zig, Rust and
-Go sources against the host libc. It does not download prebuilt
-npm .node/.so files or WASM bytecode.
+This package builds the official bun-compiled CLI from source. The TUI
+library (OpenTUI), the file finder (fff) and the web UI's Rolldown,
+Rollup, lightningcss and Tailwind natives are compiled here against the
+host libc. It does not ship prebuilt npm ELF or .node files.
 
 The web frontend is not embedded here: `opencode web` proxies to
 https://app.opencode.ai. For an offline UI, install opencode-web.
@@ -127,21 +138,55 @@ tar -xf %{S:3}
 tar -xf %{S:4}
 tar -xf %{S:5}
 
-# --single always picks the non-abi target, so upstream would force
-# FFF_LIBC=gnu / OPENTUI_LIBC=glibc. Bake in the host libc from %%{_gnu}.
+# --single selects the target whose abi is undefined, which is glibc.
+# On musl, select the musl entry instead. The ?? defaults already name
+# glibc/gnu, and a musl entry carries abi: "musl" so they are not used.
+OPENCODE_LIBC_FAMILY="%{libc_family}" python - <<'PY'
+import os
+from pathlib import Path
+p = Path("packages/cli/script/build.ts")
+text = p.read_text()
+for needle in (
+	'return item.abi === undefined',
+	'item.abi ?? "glibc"',
+	'item.abi ?? "gnu"',
+):
+	if needle not in text:
+		raise SystemExit(f"build.ts libc define not found: {needle}")
+if os.environ["OPENCODE_LIBC_FAMILY"] == "musl":
+	text = text.replace(
+		'return item.abi === undefined',
+		'return item.abi === "musl"',
+		1,
+	)
+	p.write_text(text)
+PY
+
+# Ghostty lib-vt is pinned to Zig 0.16 (revision in
+# packages/process-daemon/ghostty-revision). Cooker Zig is 0.17, so
+# there is no opencode-pty binary. Missing it must not fail the CLI
+# build; persistent terminals then look for opencode-pty on PATH.
 python - <<'PY'
 from pathlib import Path
-p = Path("packages/opencode/script/build.ts")
+p = Path("packages/cli/script/opencode-pty.ts")
 text = p.read_text()
-old_fff = 'item.abi === "musl" ? "musl" : "gnu"'
-new_fff = '"%{fff_libc}"'
-old_otui = 'item.abi ?? "glibc"'
-new_otui = '"%{opentui_libc}"'
-if old_fff not in text or old_otui not in text:
-	raise SystemExit("build.ts libc defines not found")
-text = text.replace(old_fff, new_fff, 1)
-text = text.replace(old_otui, new_otui)
-p.write_text(text)
+old = """  const source = local
+    ? path.resolve(local)
+    : pty.resolve(`${name}/bin/${target.platform === "win32" ? "opencode-pty.exe" : "opencode-pty"}`)
+"""
+new = """  let source: string
+  try {
+    source = local
+      ? path.resolve(local)
+      : pty.resolve(`${name}/bin/${target.platform === "win32" ? "opencode-pty.exe" : "opencode-pty"}`)
+  } catch (error) {
+    console.warn(`opencode-pty native binary unavailable (${name}): ${error}`)
+    return undefined
+  }
+"""
+if old not in text:
+	raise SystemExit("opencode-pty.ts resolve block not found")
+p.write_text(text.replace(old, new, 1))
 PY
 
 # Anything that looks like a prebuilt native must not reach %build.
@@ -162,14 +207,17 @@ find node_modules packages -type f ! -name '*.js' ! -name '*.ts' ! -name '*.json
 	xargs -r rm -f
 
 install -m0644 %{S:2} models-dev-api.json
+cp -a models-dev-api.json packages/core/src/models-dev/snapshot.txt
 
 %build
+set -o pipefail
 export HOME=$(mktemp -d)
 export OPENCODE_VERSION=%{version}
 export OPENCODE_CHANNEL=prod
 export OPENCODE_DISABLE_MODELS_FETCH=1
 export OPENCODE_DISABLE_AUTOUPDATE=1
-export MODELS_DEV_API_JSON="$PWD/models-dev-api.json"
+export OPENCODE_MODELS_SNAPSHOT="$PWD/models-dev-api.json"
+export npm_config_nodedir=/usr
 export BUN_INSTALL_CACHE_DIR="$PWD/.bun-cache"
 export npm_config_offline=true
 export npm_config_ignore_scripts=true
@@ -210,92 +258,27 @@ PY
 FFF_SO="$PWD/fff-0.10.5/target/release/libfff_c.so"
 test -f "$FFF_SO"
 
-# --- libopentui.so from Zig 0.17-ported sources ---
-# zig -lc++ assembles its bundled libunwind via `zig -cc1as`. That
-# entry point, still the Aug 2026 zig linked to clang 23.1.2, reports
-# the target triple as "unknown". Yoga does not need zig's libc++:
-# compile it with the system c++ and link libstdc++ by path.
+# --- libopentui.so from the Zig 0.17 port of OpenTUI 0.8.0 ---
+# Yoga is compiled by build.zig with the system c++ (addSystemCxxObject).
+# Zig 0.17's CLI flag is --release=fast, not -Doptimize=ReleaseFast.
+# The AMX-TF32 translate-c skip is already in this port's build.zig.
 (
-	cd opentui-zig-0.4.5
-	# Zig 0.17 translate-c rejects clang's AMX-TF32 intrinsic
-	# (amxtf32intrin.h returns _tile1024i from a builtin it types as
-	# int). Miniaudio includes that header only for AVX2. SSE2 is enough.
-	python - <<'PY'
-from pathlib import Path
-guard = """/* Zig 0.17 translate-c rejects clang AMX-TF32 intrinsics. */
-#define MA_NO_AVX2
-#define MA_NO_AVX
-"""
-for name in ("miniaudio_shim.c", "miniaudio_includes.h"):
-    path = Path(name)
-    text = path.read_text()
-    if "MA_NO_AVX2" in text:
-        continue
-    path.write_text(guard + text)
-PY
-	mkdir -p yoga-objs
-	: > yoga-objs/objects.list
-	while IFS= read -r src; do
-		[ -n "$src" ] || continue
-		obj="yoga-objs/${src%.cpp}.o"
-		mkdir -p "$(dirname "$obj")"
-		c++ -std=c++20 -fPIC -fexceptions -frtti -Ivendor/yoga \
-			-c "vendor/yoga/$src" -o "$obj"
-		echo "$obj" >> yoga-objs/objects.list
-	done <<'EOF'
-yoga/YGConfig.cpp
-yoga/YGEnums.cpp
-yoga/YGNode.cpp
-yoga/YGNodeLayout.cpp
-yoga/YGNodeStyle.cpp
-yoga/YGPixelGrid.cpp
-yoga/YGValue.cpp
-yoga/algorithm/AbsoluteLayout.cpp
-yoga/algorithm/Baseline.cpp
-yoga/algorithm/Cache.cpp
-yoga/algorithm/CalculateLayout.cpp
-yoga/algorithm/FlexLine.cpp
-yoga/algorithm/PixelGrid.cpp
-yoga/config/Config.cpp
-yoga/debug/AssertFatal.cpp
-yoga/debug/Log.cpp
-yoga/event/event.cpp
-yoga/node/LayoutResults.cpp
-yoga/node/Node.cpp
-EOF
-	ln -sfn "$(c++ -print-file-name=libstdc++.so)" yoga-objs/libstdc++.so
-	python - <<'PY'
-from pathlib import Path
-p = Path("build.zig")
-text = p.read_text()
-old_link = "\t\t.link_libcpp = true,\n"
-old_src = """\tmodule.addCSourceFiles(.{
-\t\t.root = yoga_dep.path(""),
-\t\t.files = &YOGA_CXX_SOURCES,
-\t\t.flags = &YOGA_CXX_FLAGS,
-\t});
-"""
-if old_link not in text or old_src not in text:
-    raise SystemExit("opentui build.zig yoga block not found")
-text = text.replace(old_link, "", 1)
-objs = [ln.strip() for ln in Path("yoga-objs/objects.list").read_text().splitlines() if ln.strip()]
-block = "\tconst yoga_objs = [_][]const u8{\n"
-for obj in objs:
-    block += f'\t\t"{obj}",\n'
-block += "\t};\n"
-block += "\tfor (yoga_objs) |obj| module.addObjectFile(b.path(obj));\n"
-block += '\tmodule.addObjectFile(b.path("yoga-objs/libstdc++.so"));\n'
-text = text.replace(old_src, block, 1)
-start = text.find("const YOGA_CXX_FLAGS")
-end = text.find("pub fn build")
-if start < 0 or end < 0:
-    raise SystemExit("opentui yoga const block not found")
-text = text[:start] + text[end:]
-p.write_text(text)
-PY
-	zig build -Doptimize=ReleaseFast
+	cd opentui-zig-0.8.0
+%if "%{libc_family}" == "musl"
+%ifarch aarch64
+	zig build --release=fast -Dlibrary-target=aarch64-linux-musl
+%else
+	zig build --release=fast -Dlibrary-target=x86_64-linux-musl
+%endif
+%else
+%ifarch aarch64
+	zig build --release=fast -Dlibrary-target=aarch64-linux-gnu.2.17
+%else
+	zig build --release=fast -Dlibrary-target=x86_64-linux-gnu.2.17
+%endif
+%endif
 )
-OPENTUI_SO=$(find opentui-zig-0.4.5 -name libopentui.so | head -n1)
+OPENTUI_SO=$(find opentui-zig-0.8.0 -name libopentui.so ! -path '*/.zig-cache/*' | head -n1)
 test -n "$OPENTUI_SO" -a -f "$OPENTUI_SO"
 
 # bun --compile only embeds statically analyzable type:file imports.
@@ -309,7 +292,7 @@ stage_opentui() {
 	cat > "$dest/package.json" <<EOF
 {
   "name": "@opentui/core-linux-%{bun_cpu}%{opentui_pkg_suffix}",
-  "version": "0.4.5",
+  "version": "0.8.0",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -366,65 +349,128 @@ for fffdir in node_modules/.bun/@ff-labs+fff-bun@*/node_modules/@ff-labs; do
 	stage_fff "$fffdir/fff-bin-linux-%{bun_cpu}-%{fff_libc}"
 done
 
-# --- Vite natives from source (never npm .node / never WASM) ---
+# --- @parcel/watcher from the vendored C++ sources ---
+# The CLI build rewrites watcher-binding.ts to
+# require("@parcel/watcher-linux-$cpu-glibc"). node-gyp must not
+# download headers; cooker has them under /usr/include/node.
+# aarch64 keeps node-gyp under /usr/lib64, x86_64 under /usr/lib.
+(
+	cd node_modules/.bun/@parcel+watcher@2.5.1/node_modules/@parcel/watcher
+	NODE_GYP=$(find /usr/lib /usr/lib64 -path '*/node-gyp/bin/node-gyp.js' -print -quit)
+	test -n "$NODE_GYP"
+	node "$NODE_GYP" rebuild --nodedir=/usr
+)
+WATCHER_NODE="$PWD/node_modules/.bun/@parcel+watcher@2.5.1/node_modules/@parcel/watcher/build/Release/watcher.node"
+test -f "$WATCHER_NODE"
+
+stage_watcher() {
+	local dest="$1"
+	rm -rf "$dest"
+	mkdir -p "$dest"
+	cat > "$dest/package.json" <<EOF
+{
+  "name": "@parcel/watcher-linux-%{bun_cpu}-%{opentui_libc}",
+  "version": "2.5.1",
+  "main": "watcher.node",
+  "os": ["linux"],
+  "cpu": ["%{bun_cpu}"]
+}
+EOF
+	cp -a "$WATCHER_NODE" "$dest/watcher.node"
+}
+for watcher_dest in \
+	packages/cli/node_modules/@parcel/watcher-linux-%{bun_cpu}-%{opentui_libc} \
+	packages/core/node_modules/@parcel/watcher-linux-%{bun_cpu}-%{opentui_libc} \
+	node_modules/@parcel/watcher-linux-%{bun_cpu}-%{opentui_libc} \
+	node_modules/.bun/node_modules/@parcel/watcher-linux-%{bun_cpu}-%{opentui_libc}
+do
+	stage_watcher "$watcher_dest"
+done
+
+# --- Vite natives from source ---
 # JS loaders pick linux-$cpu-gnu vs linux-$cpu-musl by filename only.
 # The file we drop there is compiled against the host libc.
-# Only the crate roots. cargo-vendor copies are in the checksum
-# files; deleting them makes cargo --offline refuse the tree.
+# Do not set NAPI_RS_NATIVE_LIBRARY_PATH: oxide, rolldown and
+# lightningcss all honor it and would load the wrong addon.
+# cargo-vendor copies are named in the checksum files; deleting them
+# makes cargo --offline refuse the tree.
 find vite-natives -path '*/cargo-vendor/*' -prune -o \
 	\( -name rust-toolchain.toml -o -name rust-toolchain \) \
 	-exec rm -f {} +
-# Drop hardcoded cross-linkers / nightly rustflags; use the builder's cc.
-rm -f vite-natives/rollup-4.60.4/rust/bindings_napi/.cargo/config.toml \
-	vite-natives/rollup-4.60.4/rust/bindings_wasm/.cargo/config.toml \
-	vite-natives/tailwindcss-4.1.11/crates/node/.cargo/config.toml
 
 (
-	cd vite-natives/rollup-4.60.4/rust
-	cargo build --release -p bindings_napi --offline
+	cd vite-natives/rolldown-1.2.5
+	cargo build --release -p rolldown_binding --offline
 )
-ROLLUP_SO="$PWD/vite-natives/rollup-4.60.4/rust/target/release/libbindings_napi.so"
-test -f "$ROLLUP_SO"
+ROLLDOWN_SO="$PWD/vite-natives/rolldown-1.2.5/target/release/librolldown_binding.so"
+test -f "$ROLLDOWN_SO"
 
 (
-	cd vite-natives/lightningcss-1.30.1
+	cd vite-natives/lightningcss-1.33.0
 	cargo build --release -p lightningcss_node --offline
 )
-LIGHTNING_SO="$PWD/vite-natives/lightningcss-1.30.1/target/release/liblightningcss_node.so"
+LIGHTNING_SO="$PWD/vite-natives/lightningcss-1.33.0/target/release/liblightningcss_node.so"
 test -f "$LIGHTNING_SO"
+# @tailwindcss/node 4.3.3 imports lightningcss 1.32, which Vite's
+# config loads even though Vite itself uses 1.33.
+(
+	cd vite-natives/lightningcss-1.32.0
+	cargo build --release -p lightningcss_node --offline
+)
+LIGHTNING32_SO="$PWD/vite-natives/lightningcss-1.32.0/target/release/liblightningcss_node.so"
+test -f "$LIGHTNING32_SO"
 
 (
-	cd vite-natives/tailwindcss-4.1.11
+	cd vite-natives/tailwindcss-4.3.3
 	cargo build --release -p tailwind-oxide --offline
 )
-OXIDE_SO="$PWD/vite-natives/tailwindcss-4.1.11/target/release/libtailwind_oxide.so"
+OXIDE_SO="$PWD/vite-natives/tailwindcss-4.3.3/target/release/libtailwind_oxide.so"
 test -f "$OXIDE_SO"
 
+# vite-plugin-pwa -> workbox-build parses with Rollup 4.62. native.js
+# loads dist/rollup.<platform>.node before the optional npm package.
 (
-	cd vite-natives/esbuild-0.25.12
-	export GOPROXY=off
-	export GOSUMDB=off
-	export GOTOOLCHAIN=local
-	export GOFLAGS="-mod=vendor"
-	go build --buildmode=pie -o bin/esbuild ./cmd/esbuild
+	cd vite-natives/rollup-4.62.4/rust
+	rm -f bindings_napi/.cargo/config.toml bindings_wasm/.cargo/config.toml
+	cargo build --release -p bindings_napi --offline
 )
-export ESBUILD_BINARY_PATH="$PWD/vite-natives/esbuild-0.25.12/bin/esbuild"
-test -x "$ESBUILD_BINARY_PATH"
+ROLLUP_SO="$PWD/vite-natives/rollup-4.62.4/rust/target/release/libbindings_napi.so"
+test -f "$ROLLUP_SO"
 
 # Stage the freshly built addons where the vendored JS loaders look.
+# x64 glibc rolldown loads ../rolldown-binding.*.node from dist/shared
+# (that is dist/). arm64 and musl load ./ from dist/shared. Both copies
+# are the same file.
 NATIVE_TRIPLE="linux-%{bun_cpu}-%{native_abi}"
-find node_modules packages -path '*/rollup/dist' -type d 2>/dev/null |
+find node_modules packages -path '*/rollup/dist' -type d |
 while IFS= read -r dist; do
 	cp -af "$ROLLUP_SO" "$dist/rollup.${NATIVE_TRIPLE}.node"
 done
-find node_modules packages -path '*/lightningcss/package.json' 2>/dev/null |
+find node_modules packages -path '*/rolldown/package.json' -type f |
 while IFS= read -r pkg; do
-	cp -af "$LIGHTNING_SO" "$(dirname "$pkg")/lightningcss.${NATIVE_TRIPLE}.node"
+	root=$(dirname "$pkg")
+	mkdir -p "$root/dist" "$root/dist/shared"
+	cp -af "$ROLLDOWN_SO" "$root/dist/rolldown-binding.${NATIVE_TRIPLE}.node"
+	cp -af "$ROLLDOWN_SO" "$root/dist/shared/rolldown-binding.${NATIVE_TRIPLE}.node"
 done
-find node_modules packages -path '*/@tailwindcss/oxide' -type d 2>/dev/null |
-while IFS= read -r oxidedir; do
-	cp -af "$OXIDE_SO" "$oxidedir/tailwindcss-oxide.${NATIVE_TRIPLE}.node"
+find node_modules packages -path '*/lightningcss/package.json' -type f |
+while IFS= read -r pkg; do
+	ver=$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' "$pkg")
+	case "$ver" in
+	1.33.0) cp -af "$LIGHTNING_SO" "$(dirname "$pkg")/lightningcss.${NATIVE_TRIPLE}.node" ;;
+	1.32.0) cp -af "$LIGHTNING32_SO" "$(dirname "$pkg")/lightningcss.${NATIVE_TRIPLE}.node" ;;
+	*) echo "unexpected lightningcss version $ver" >&2; exit 1 ;;
+	esac
 done
+find node_modules packages -path '*/@tailwindcss/oxide/index.js' -type f |
+while IFS= read -r index; do
+	cp -af "$OXIDE_SO" "$(dirname "$index")/tailwindcss-oxide.${NATIVE_TRIPLE}.node"
+done
+test -n "$(find node_modules -path '*/rollup/dist/rollup.'"${NATIVE_TRIPLE}"'.node' -print -quit)"
+test -n "$(find node_modules -name "rolldown-binding.${NATIVE_TRIPLE}.node" -print -quit)"
+test -n "$(find node_modules -path '*/lightningcss@1.32.0*/lightningcss.'"${NATIVE_TRIPLE}"'.node' -print -quit)"
+test -n "$(find node_modules -path '*/lightningcss@1.33.0*/lightningcss.'"${NATIVE_TRIPLE}"'.node' -print -quit)"
+test -n "$(find node_modules -name "tailwindcss-oxide.${NATIVE_TRIPLE}.node" -print -quit)"
 
 # bun's node:wasi is incomplete; run Vite under Node with the .node files.
 if [ -f packages/app/package.json ]; then
@@ -432,16 +478,23 @@ if [ -f packages/app/package.json ]; then
 		packages/app/package.json
 fi
 
-cd packages/opencode
-# TUI/CLI only (main package). FFF_LIBC/OPENTUI_LIBC come from %%{_gnu}.
-bun --bun ./script/build.ts --single --skip-install --skip-embed-web-ui
+# schema.ts imports prettier. The isolated install links it from
+# packages that format generated sources, not from the cli package.
+if [ ! -e packages/cli/node_modules/prettier ]; then
+	prett=$(find node_modules/.bun -maxdepth 1 -type d -name 'prettier@*' | head -n1)
+	test -n "$prett"
+	ln -s "../../../$prett/node_modules/prettier" packages/cli/node_modules/prettier
+fi
+
+cd packages/cli
+# TUI/CLI only. A second pass embeds packages/app/dist (opencode-web).
+bun --bun ./script/build.ts --single --skip-install --skip-web-ui
 mkdir -p ../../dist-tui
-cp -a dist/opencode-*/bin/opencode ../../dist-tui/opencode
-bun --bun ./script/schema.ts schema.json
-# Same CLI with packages/app/dist embedded (opencode-web subpackage).
+cp -a dist/cli-*/bin/opencode ../../dist-tui/opencode
+bun --bun ./script/schema.ts "$PWD/schema.json"
 bun --bun ./script/build.ts --single --skip-install
 mkdir -p ../../dist-web
-cp -a dist/opencode-*/bin/opencode ../../dist-web/opencode
+cp -a dist/cli-*/bin/opencode ../../dist-web/opencode
 cd -
 
 %install
@@ -449,7 +502,7 @@ install -Dm0755 dist-tui/opencode \
 	%{buildroot}%{_bindir}/opencode
 install -Dm0755 dist-web/opencode \
 	%{buildroot}%{_bindir}/opencode-web
-install -Dm0644 packages/opencode/schema.json \
+install -Dm0644 packages/cli/schema.json \
 	%{buildroot}%{_datadir}/opencode/schema.json
 
 %check
