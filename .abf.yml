@@ -4,5 +4,5 @@ sources:
   opencode-vite-natives.tar.xz: d7ada78555ea3dc187dcf52f2f240c2e4009bcef
   opencode-2.2.6.tar.gz: b784c9a34c9a04c5205b88877ecc5562d19c4689
   opencode-2.2.6-node_modules.tar.xz: f4b5d557dd677bef05878b679dc1d68df8e22dcc
-  opentui-zig-0.8.1.tar.xz: 187d3afdb9d3f81ef6652596a5d8fbdf7f7b7ee5
   opencode-pty-vendor.tar.xz: e1fe01b62c51025ffe2fc8994252e061d3636741
+  opentui-zig-0.8.1.tar.xz: f7bedd38e5dc5c2de8577eb4afc8da4a1b2f98c8

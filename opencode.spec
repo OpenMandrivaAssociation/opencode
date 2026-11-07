@@ -70,6 +70,8 @@ Source1:	opencode-%{version}-node_modules.tar.xz
 Source2:	models-dev-api.json
 # OpenTUI 0.8.1 Zig core for cooker Zig 0.17 (yoga + uucode + ghostty
 # vendored from upstream zig-deps; no prebuilt libopentui).
+# Ghostty 1.4.0 src/lib is included. Zig resolves those imports even
+# from comptime-dead wasm and Windows branches.
 Source3:	opentui-zig-0.8.1.tar.xz
 # fff 0.10.5 crate sources + cargo-vendor (no rust-toolchain, no Windows import libs)
 Source4:	fff-0.10.5-with-vendor.tar.xz
