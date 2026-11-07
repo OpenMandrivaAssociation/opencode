@@ -21,7 +21,7 @@
 # First time, on a networked machine (after bun is installed):
 #   ./vendor-sources.sh
 #   abb store opencode-VERSION.tar.gz opencode-VERSION-node_modules.tar.xz \
-#     models-dev-api.json opentui-zig-0.8.0.tar.xz \
+#     models-dev-api.json opentui-zig-0.8.1.tar.xz \
 #     fff-0.10.5-with-vendor.tar.xz opencode-vite-natives.tar.xz \
 #     opencode-pty-vendor.tar.xz
 # Remove a replaced key from .abf.yml before abb store reuses its name.
@@ -55,8 +55,8 @@
 %endif
 
 Name:		opencode
-Version:	2.2.5
-Release:	2
+Version:	2.2.6
+Release:	1
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -68,8 +68,9 @@ Source1:	opencode-%{version}-node_modules.tar.xz
 # Trimmed models catalog from packages/core/script/update-models-snapshot.ts
 # (https://models.opencode.ai). Fetched at vendor time, not build time.
 Source2:	models-dev-api.json
-# OpenTUI 0.8.0 Zig core, ported to cooker Zig 0.17 (yoga + uucode + ghostty)
-Source3:	opentui-zig-0.8.0.tar.xz
+# OpenTUI 0.8.1 Zig core for cooker Zig 0.17 (yoga + uucode + ghostty
+# vendored from upstream zig-deps; no prebuilt libopentui).
+Source3:	opentui-zig-0.8.1.tar.xz
 # fff 0.10.5 crate sources + cargo-vendor (no rust-toolchain, no Windows import libs)
 Source4:	fff-0.10.5-with-vendor.tar.xz
 # Rolldown 1.2.5 / Rollup 4.62.4 / lightningcss 1.33.0 and 1.32.0 /
@@ -80,7 +81,7 @@ Source4:	fff-0.10.5-with-vendor.tar.xz
 Source5:	opencode-vite-natives.tar.xz
 # Rust crates for packages/process-daemon. Not Ghostty source.
 Source6:	opencode-pty-vendor.tar.xz
-Patch0:	opencode-2.2.5-libghostty-1.4.patch
+Patch0:	opencode-2.2.6-libghostty-1.4.patch
 
 BuildRequires:	bun
 BuildRequires:	nodejs
@@ -285,12 +286,14 @@ PY
 FFF_SO="$PWD/fff-0.10.5/target/release/libfff_c.so"
 test -f "$FFF_SO"
 
-# --- libopentui.so from the Zig 0.17 port of OpenTUI 0.8.0 ---
+# --- libopentui.so from the Zig 0.17 port of OpenTUI 0.8.1 ---
 # Yoga is compiled by build.zig with the system c++ (addSystemCxxObject).
 # Zig 0.17's CLI flag is --release=fast, not -Doptimize=ReleaseFast.
-# The AMX-TF32 translate-c skip is already in this port's build.zig.
+# The AMX-TF32 translate-c skip is in this tree's build.zig.
+# Upstream allows only Zig 0.17.0; the tree also accepts cooker 0.17.1.
+# No FFmpeg prefix: the video shim builds with OTV_NO_FFMPEG.
 (
-	cd opentui-zig-0.8.0
+	cd opentui-zig-0.8.1
 %if "%{libc_family}" == "musl"
 %ifarch aarch64
 	zig build --release=fast -Dlibrary-target=aarch64-linux-musl
@@ -305,7 +308,7 @@ test -f "$FFF_SO"
 %endif
 %endif
 )
-OPENTUI_SO=$(find opentui-zig-0.8.0 -name libopentui.so ! -path '*/.zig-cache/*' | head -n1)
+OPENTUI_SO=$(find opentui-zig-0.8.1 -name libopentui.so ! -path '*/.zig-cache/*' | head -n1)
 test -n "$OPENTUI_SO" -a -f "$OPENTUI_SO"
 
 # bun --compile only embeds statically analyzable type:file imports.
@@ -319,7 +322,7 @@ stage_opentui() {
 	cat > "$dest/package.json" <<EOF
 {
   "name": "@opentui/core-linux-%{bun_cpu}%{opentui_pkg_suffix}",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -548,7 +551,7 @@ export OPENCODE_DISABLE_AUTOUPDATE=1
 export PATH="%{buildroot}%{_bindir}:/usr/bin:$PATH"
 opencode --version
 opencode-web --version
-opencode-pty --version | grep -q 'opencode-pty 0.4.0 (protocol 7)'
+opencode-pty --version | grep -q 'opencode-pty 0.5.0 (protocol 8)'
 
 %files pty
 %license packages/process-daemon/LICENSE
