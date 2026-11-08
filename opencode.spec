@@ -157,6 +157,13 @@ sed -i \
 	's/throw new Error(`This script requires bun@/console.warn(`Warning: This script requires bun@/' \
 	packages/script/src/index.ts
 
+# Bun 1.4's built-in ws exports WebSocketServer, but not extension or
+# subprotocol. The named reexport crashes the compiled binary at startup:
+# SyntaxError: Export named 'extension' not found in module 'ws'.
+sed -i \
+	's/createWebSocketStream, extension, Receiver, Sender, subprotocol, WebSocket/createWebSocketStream, Receiver, Sender, WebSocket/' \
+	packages/cli/script/build.ts
+
 tar -xf %{S:1}
 tar -xf %{S:3}
 tar -xf %{S:4}
