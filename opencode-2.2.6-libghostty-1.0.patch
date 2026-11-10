@@ -1,0 +1,626 @@
+diff -ruN a/packages/process-daemon/build.rs b/packages/process-daemon/build.rs
+--- a/packages/process-daemon/build.rs	2026-11-06 23:49:49.000000000 +0100
++++ b/packages/process-daemon/build.rs	2026-11-09 19:42:28.675775465 +0100
+@@ -1,151 +1,26 @@
+-use std::env;
+-use std::path::PathBuf;
+-use std::process::Command;
+-
++// Link the system libghostty-vt 1.0. The upstream build.rs fetches a Zig
++// 0.16 revision and builds a static archive; that pin does not match this
++// toolchain.
+ fn main() {
+-    println!("cargo:rerun-if-changed=build.rs");
+-    println!("cargo:rerun-if-changed=ghostty-revision");
+-    println!("cargo:rerun-if-changed=src/ghostty/ffi.rs");
+-    println!("cargo:rerun-if-env-changed=GHOSTTY_SOURCE_DIR");
+-    println!("cargo:rerun-if-env-changed=OPENCODE_ZIG_CPU");
+-
+-    let revision = include_str!("ghostty-revision").trim();
+-    assert_eq!(
+-        include_str!("src/ghostty/ffi.rs")
+-            .lines()
+-            .find_map(|line| line.strip_prefix("// Ghostty revision: ")),
+-        Some(revision),
+-        "regenerate the bindings with script/ghostty-bindings"
+-    );
+-    let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+-    let source = match env::var_os("GHOSTTY_SOURCE_DIR") {
+-        Some(path) => {
+-            let path = PathBuf::from(path);
+-            for relative in ["src", "pkg", "include", "build.zig", "build.zig.zon"] {
+-                println!("cargo:rerun-if-changed={}", path.join(relative).display());
+-            }
+-            path
+-        }
+-        None => {
+-            let path = out.join(format!("ghostty-{revision}"));
+-            if !path.join(".checkout-complete").exists() {
+-                if !path.join(".git").exists() {
+-                    run(Command::new("git").args(["init"]).arg(&path));
+-                }
+-                run(Command::new("git").arg("-C").arg(&path).args([
+-                    "fetch",
+-                    "--depth=1",
+-                    "https://github.com/ghostty-org/ghostty.git",
+-                    revision,
+-                ]));
+-                run(Command::new("git").arg("-C").arg(&path).args([
+-                    "-c",
+-                    "core.longpaths=true",
+-                    "checkout",
+-                    "--detach",
+-                    revision,
+-                ]));
+-                std::fs::write(path.join(".checkout-complete"), revision)
+-                    .expect("record Ghostty checkout");
+-            }
+-            path
+-        }
+-    };
+-
+-    // The checked-in declarations must match the native headers exactly.
+-    // Local overrides are useful for builds, but not for silently changing ABI.
+-    let head = Command::new("git")
+-        .arg("-C")
+-        .arg(&source)
+-        .args(["rev-parse", "HEAD"])
++    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
++    let output = std::process::Command::new("pkg-config")
++        .args(["--libs", "libghostty-vt"])
+         .output()
+-        .expect("read Ghostty revision");
++        .expect("run pkg-config");
+     assert!(
+-        head.status.success(),
+-        "GHOSTTY_SOURCE_DIR must be a Git checkout"
++        output.status.success(),
++        "pkg-config libghostty-vt failed: {}",
++        String::from_utf8_lossy(&output.stderr)
+     );
+-    assert_eq!(
+-        String::from_utf8(head.stdout)
+-            .expect("Ghostty revision UTF-8")
+-            .trim(),
+-        revision,
+-        "Ghostty headers and bindings are pinned together; regenerate before changing the revision"
+-    );
+-    run(Command::new("git").arg("-C").arg(&source).args([
+-        "-c",
+-        "core.longpaths=true",
+-        "diff",
+-        "--quiet",
+-        "HEAD",
+-        "--",
+-        "include/ghostty",
+-    ]));
+-
+-    let target = env::var("TARGET").expect("TARGET");
+-    let install = out.join("ghostty-install");
+-    let mut build = Command::new("zig");
+-    build.current_dir(&source).args([
+-        "build",
+-        "-Demit-lib-vt=true",
+-        "-Demit-xcframework=false",
+-        "-Dapp-runtime=none",
+-    ]);
+-    build.arg(if env::var("DEBUG").as_deref() == Ok("true") {
+-        "-Doptimize=Debug"
+-    } else if matches!(env::var("OPT_LEVEL").as_deref(), Ok("s" | "z")) {
+-        "-Doptimize=ReleaseSmall"
+-    } else {
+-        "-Doptimize=ReleaseFast"
+-    });
+-    // Release builds pin a portable CPU. Unix releases use script/release-bin/zig;
+-    // Windows cannot run that shell wrapper, so it sets this instead.
+-    if let Ok(cpu) = env::var("OPENCODE_ZIG_CPU") {
+-        build.arg(format!("-Dcpu={cpu}"));
+-    }
+-    build.arg("--prefix").arg(&install);
+-    build.arg("--cache-dir").arg(out.join("zig-cache"));
+-    if env::var("HOST").as_deref() != Ok(target.as_str()) {
+-        let zig_target = match target.as_str() {
+-            "x86_64-unknown-linux-gnu" => "x86_64-linux-gnu",
+-            "aarch64-unknown-linux-gnu" => "aarch64-linux-gnu",
+-            "x86_64-unknown-linux-musl" => "x86_64-linux-musl",
+-            "aarch64-unknown-linux-musl" => "aarch64-linux-musl",
+-            "x86_64-apple-darwin" => "x86_64-macos",
+-            "aarch64-apple-darwin" => "aarch64-macos",
+-            "x86_64-pc-windows-msvc" => "x86_64-windows-msvc",
+-            "aarch64-pc-windows-msvc" => "aarch64-windows-msvc",
+-            _ => panic!("unsupported Ghostty target: {target}"),
+-        };
+-        build.arg(format!("-Dtarget={zig_target}"));
+-    }
+-    run(&mut build);
+-
+-    let library = install.join("lib");
+-    let windows = target.contains("windows");
+-    assert!(
+-        library
+-            .join(if windows {
+-                "ghostty-vt-static.lib"
+-            } else {
+-                "libghostty-vt.a"
+-            })
+-            .is_file()
+-    );
+-    println!("cargo:rustc-link-search=native={}", library.display());
+-    // ghostty-vt.lib is the Windows DLL import library, not the static archive.
+-    println!(
+-        "cargo:rustc-link-lib={}",
+-        if windows {
+-            "static:+verbatim=ghostty-vt-static.lib"
+-        } else {
+-            "static=ghostty-vt"
++    let libs = String::from_utf8(output.stdout).expect("pkg-config output is utf-8");
++    let mut linked = false;
++    for token in libs.split_whitespace() {
++        if let Some(path) = token.strip_prefix("-L") {
++            println!("cargo:rustc-link-search=native={path}");
++        } else if let Some(name) = token.strip_prefix("-l") {
++            println!("cargo:rustc-link-lib=dylib={name}");
++            linked = true;
+         }
+-    );
+-}
+-
+-fn run(command: &mut Command) {
+-    let status = command
+-        .status()
+-        .unwrap_or_else(|error| panic!("{command:?}: {error}"));
+-    assert!(status.success(), "{command:?} failed: {status}");
++    }
++    assert!(linked, "pkg-config libghostty-vt did not name a library");
+ }
+diff -ruN a/packages/process-daemon/src/ghostty/ffi.rs b/packages/process-daemon/src/ghostty/ffi.rs
+--- a/packages/process-daemon/src/ghostty/ffi.rs	2026-11-06 23:49:49.000000000 +0100
++++ b/packages/process-daemon/src/ghostty/ffi.rs	2026-11-09 19:42:28.681330727 +0100
+@@ -141,21 +141,19 @@
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone)]
+ pub struct GhosttyGridRef {
+-    pub size: usize,
+     pub node: *mut ::std::os::raw::c_void,
+     pub x: u16,
+     pub y: u16,
+ }
+ #[allow(clippy::unnecessary_operation, clippy::identity_op)]
+ const _: () = {
+-    ["Size of GhosttyGridRef"][::std::mem::size_of::<GhosttyGridRef>() - 24usize];
++    // libghostty-vt 1.0 froze this at 16 bytes and dropped the size field.
++    ["Size of GhosttyGridRef"][::std::mem::size_of::<GhosttyGridRef>() - 16usize];
+     ["Alignment of GhosttyGridRef"][::std::mem::align_of::<GhosttyGridRef>() - 8usize];
+-    ["Offset of field: GhosttyGridRef::size"]
+-        [::std::mem::offset_of!(GhosttyGridRef, size) - 0usize];
+     ["Offset of field: GhosttyGridRef::node"]
+-        [::std::mem::offset_of!(GhosttyGridRef, node) - 8usize];
+-    ["Offset of field: GhosttyGridRef::x"][::std::mem::offset_of!(GhosttyGridRef, x) - 16usize];
+-    ["Offset of field: GhosttyGridRef::y"][::std::mem::offset_of!(GhosttyGridRef, y) - 18usize];
++        [::std::mem::offset_of!(GhosttyGridRef, node) - 0usize];
++    ["Offset of field: GhosttyGridRef::x"][::std::mem::offset_of!(GhosttyGridRef, x) - 8usize];
++    ["Offset of field: GhosttyGridRef::y"][::std::mem::offset_of!(GhosttyGridRef, y) - 10usize];
+ };
+ impl Default for GhosttyGridRef {
+     fn default() -> Self {
+@@ -237,23 +235,21 @@
+ #[repr(C)]
+ #[derive(Debug, Copy, Clone)]
+ pub struct GhosttySelection {
+-    pub size: usize,
+     pub start: GhosttyGridRef,
+     pub end: GhosttyGridRef,
+     pub rectangle: bool,
+ }
+ #[allow(clippy::unnecessary_operation, clippy::identity_op)]
+ const _: () = {
+-    ["Size of GhosttySelection"][::std::mem::size_of::<GhosttySelection>() - 64usize];
++    // libghostty-vt 1.0 froze this at 40 bytes and dropped the size field.
++    ["Size of GhosttySelection"][::std::mem::size_of::<GhosttySelection>() - 40usize];
+     ["Alignment of GhosttySelection"][::std::mem::align_of::<GhosttySelection>() - 8usize];
+-    ["Offset of field: GhosttySelection::size"]
+-        [::std::mem::offset_of!(GhosttySelection, size) - 0usize];
+     ["Offset of field: GhosttySelection::start"]
+-        [::std::mem::offset_of!(GhosttySelection, start) - 8usize];
++        [::std::mem::offset_of!(GhosttySelection, start) - 0usize];
+     ["Offset of field: GhosttySelection::end"]
+-        [::std::mem::offset_of!(GhosttySelection, end) - 32usize];
++        [::std::mem::offset_of!(GhosttySelection, end) - 16usize];
+     ["Offset of field: GhosttySelection::rectangle"]
+-        [::std::mem::offset_of!(GhosttySelection, rectangle) - 56usize];
++        [::std::mem::offset_of!(GhosttySelection, rectangle) - 32usize];
+ };
+ impl Default for GhosttySelection {
+     fn default() -> Self {
+@@ -299,15 +295,7 @@
+         }
+     }
+ }
+-unsafe extern "C" {
+-    pub fn ghostty_terminal_selection_format_buf(
+-        terminal: GhosttyTerminal,
+-        options: GhosttyTerminalSelectionFormatOptions,
+-        buf: *mut u8,
+-        buf_len: usize,
+-        out_written: *mut usize,
+-    ) -> GhosttyResult;
+-}
++
+ #[repr(C)]
+ #[derive(Debug, Default, Copy, Clone)]
+ pub struct GhosttyTerminalOptions {
+@@ -399,33 +387,38 @@
+         len: usize,
+     ),
+ >;
+-pub const GHOSTTY_TERMINAL_OPT_USERDATA: GhosttyTerminalOption = 0;
+-pub const GHOSTTY_TERMINAL_OPT_WRITE_PTY: GhosttyTerminalOption = 1;
+-pub const GHOSTTY_TERMINAL_OPT_BELL: GhosttyTerminalOption = 2;
+-pub const GHOSTTY_TERMINAL_OPT_ENQUIRY: GhosttyTerminalOption = 3;
+-pub const GHOSTTY_TERMINAL_OPT_XTVERSION: GhosttyTerminalOption = 4;
+-pub const GHOSTTY_TERMINAL_OPT_TITLE_CHANGED: GhosttyTerminalOption = 5;
+-pub const GHOSTTY_TERMINAL_OPT_SIZE: GhosttyTerminalOption = 6;
+-pub const GHOSTTY_TERMINAL_OPT_COLOR_SCHEME: GhosttyTerminalOption = 7;
+-pub const GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES: GhosttyTerminalOption = 8;
+-pub const GHOSTTY_TERMINAL_OPT_TITLE: GhosttyTerminalOption = 9;
+-pub const GHOSTTY_TERMINAL_OPT_PWD: GhosttyTerminalOption = 10;
+-pub const GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND: GhosttyTerminalOption = 11;
+-pub const GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND: GhosttyTerminalOption = 12;
+-pub const GHOSTTY_TERMINAL_OPT_COLOR_CURSOR: GhosttyTerminalOption = 13;
+-pub const GHOSTTY_TERMINAL_OPT_COLOR_PALETTE: GhosttyTerminalOption = 14;
+-pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT: GhosttyTerminalOption = 15;
+-pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE: GhosttyTerminalOption = 16;
+-pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE: GhosttyTerminalOption = 17;
+-pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM: GhosttyTerminalOption = 18;
+-pub const GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES: GhosttyTerminalOption = 19;
+-pub const GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY: GhosttyTerminalOption = 20;
+-pub const GHOSTTY_TERMINAL_OPT_SELECTION: GhosttyTerminalOption = 21;
+-pub const GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE: GhosttyTerminalOption = 22;
+-pub const GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK: GhosttyTerminalOption = 23;
+-pub const GHOSTTY_TERMINAL_OPT_GLYPH_PROTOCOL: GhosttyTerminalOption = 24;
+-pub const GHOSTTY_TERMINAL_OPT_PWD_CHANGED: GhosttyTerminalOption = 25;
+-pub const GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE: GhosttyTerminalOption = 26;
++// libghostty-vt 1.0 inserted INVALID at 0 and shifted every option by one.
++pub const GHOSTTY_TERMINAL_OPT_INVALID: GhosttyTerminalOption = 0;
++pub const GHOSTTY_TERMINAL_OPT_USERDATA: GhosttyTerminalOption = 1;
++pub const GHOSTTY_TERMINAL_OPT_WRITE_PTY: GhosttyTerminalOption = 2;
++pub const GHOSTTY_TERMINAL_OPT_BELL: GhosttyTerminalOption = 3;
++pub const GHOSTTY_TERMINAL_OPT_ENQUIRY: GhosttyTerminalOption = 4;
++pub const GHOSTTY_TERMINAL_OPT_XTVERSION: GhosttyTerminalOption = 5;
++pub const GHOSTTY_TERMINAL_OPT_TITLE_CHANGED: GhosttyTerminalOption = 6;
++pub const GHOSTTY_TERMINAL_OPT_SIZE: GhosttyTerminalOption = 7;
++pub const GHOSTTY_TERMINAL_OPT_COLOR_SCHEME: GhosttyTerminalOption = 8;
++pub const GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES: GhosttyTerminalOption = 9;
++pub const GHOSTTY_TERMINAL_OPT_TITLE: GhosttyTerminalOption = 10;
++pub const GHOSTTY_TERMINAL_OPT_PWD: GhosttyTerminalOption = 11;
++pub const GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND: GhosttyTerminalOption = 12;
++pub const GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND: GhosttyTerminalOption = 13;
++pub const GHOSTTY_TERMINAL_OPT_COLOR_CURSOR: GhosttyTerminalOption = 14;
++pub const GHOSTTY_TERMINAL_OPT_COLOR_PALETTE: GhosttyTerminalOption = 15;
++pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT: GhosttyTerminalOption = 16;
++pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE: GhosttyTerminalOption = 17;
++pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE: GhosttyTerminalOption = 18;
++pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM: GhosttyTerminalOption = 19;
++pub const GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES: GhosttyTerminalOption = 20;
++pub const GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY: GhosttyTerminalOption = 21;
++pub const GHOSTTY_TERMINAL_OPT_SELECTION: GhosttyTerminalOption = 22;
++pub const GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE: GhosttyTerminalOption = 23;
++pub const GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK: GhosttyTerminalOption = 24;
++pub const GHOSTTY_TERMINAL_OPT_GLYPH_PROTOCOL: GhosttyTerminalOption = 25;
++pub const GHOSTTY_TERMINAL_OPT_PWD_CHANGED: GhosttyTerminalOption = 26;
++pub const GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE: GhosttyTerminalOption = 27;
++// libghostty-vt 1.0. Scrollback is not part of the upstream bindings.
++pub const GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES: GhosttyTerminalOption = 28;
++pub const GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES: GhosttyTerminalOption = 29;
+ pub const GHOSTTY_TERMINAL_OPT_MAX_VALUE: GhosttyTerminalOption = 2147483647;
+ pub type GhosttyTerminalOption = ::std::os::raw::c_uint;
+ pub const GHOSTTY_TERMINAL_DATA_INVALID: GhosttyTerminalData = 0;
+@@ -465,10 +458,15 @@
+ pub const GHOSTTY_TERMINAL_DATA_MAX_VALUE: GhosttyTerminalData = 2147483647;
+ pub type GhosttyTerminalData = ::std::os::raw::c_uint;
+ unsafe extern "C" {
++    // libghostty-vt 1.0 takes cols and rows. Scrollback is
++    // GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, set after creation.
++    // The pinned revision passed GhosttyTerminalOptions by value; on
++    // x86-64 that put max_scrollback in the rows register.
+     pub fn ghostty_terminal_new(
+         allocator: *const GhosttyAllocator,
+         terminal: *mut GhosttyTerminal,
+-        options: GhosttyTerminalOptions,
++        cols: u16,
++        rows: u16,
+     ) -> GhosttyResult;
+ }
+ unsafe extern "C" {
+@@ -626,12 +624,38 @@
+         }
+     }
+ }
++pub type GhosttyFormatterOption = ::std::os::raw::c_uint;
++pub const GHOSTTY_FORMATTER_OPT_EMIT: GhosttyFormatterOption = 1;
++pub const GHOSTTY_FORMATTER_OPT_UNWRAP: GhosttyFormatterOption = 2;
++pub const GHOSTTY_FORMATTER_OPT_TRIM: GhosttyFormatterOption = 3;
++pub const GHOSTTY_FORMATTER_OPT_SELECTION: GhosttyFormatterOption = 4;
++pub const GHOSTTY_FORMATTER_OPT_EXTRAS: GhosttyFormatterOption = 5;
++pub type GhosttyFormatterExtras = u32;
++pub const GHOSTTY_FORMATTER_EXTRA_PALETTE: GhosttyFormatterExtras = 1 << 0;
++pub const GHOSTTY_FORMATTER_EXTRA_MODES: GhosttyFormatterExtras = 1 << 1;
++pub const GHOSTTY_FORMATTER_EXTRA_SCROLLING_REGION: GhosttyFormatterExtras = 1 << 2;
++pub const GHOSTTY_FORMATTER_EXTRA_TABSTOPS: GhosttyFormatterExtras = 1 << 3;
++pub const GHOSTTY_FORMATTER_EXTRA_PWD: GhosttyFormatterExtras = 1 << 4;
++pub const GHOSTTY_FORMATTER_EXTRA_KEYBOARD: GhosttyFormatterExtras = 1 << 5;
++pub const GHOSTTY_FORMATTER_EXTRA_CURSOR: GhosttyFormatterExtras = 1 << 6;
++pub const GHOSTTY_FORMATTER_EXTRA_STYLE: GhosttyFormatterExtras = 1 << 7;
++pub const GHOSTTY_FORMATTER_EXTRA_HYPERLINK: GhosttyFormatterExtras = 1 << 8;
++pub const GHOSTTY_FORMATTER_EXTRA_PROTECTION: GhosttyFormatterExtras = 1 << 9;
++pub const GHOSTTY_FORMATTER_EXTRA_KITTY_KEYBOARD: GhosttyFormatterExtras = 1 << 10;
++pub const GHOSTTY_FORMATTER_EXTRA_CHARSETS: GhosttyFormatterExtras = 1 << 11;
+ unsafe extern "C" {
++    // libghostty-vt 1.0 takes no options here. Set them with ghostty_formatter_set.
+     pub fn ghostty_formatter_terminal_new(
+         allocator: *const GhosttyAllocator,
+         formatter: *mut GhosttyFormatter,
+         terminal: GhosttyTerminal,
+-        options: GhosttyFormatterTerminalOptions,
++    ) -> GhosttyResult;
++}
++unsafe extern "C" {
++    pub fn ghostty_formatter_set(
++        formatter: GhosttyFormatter,
++        option: GhosttyFormatterOption,
++        value: *const ::std::os::raw::c_void,
+     ) -> GhosttyResult;
+ }
+ unsafe extern "C" {
+diff -ruN a/packages/process-daemon/src/ghostty/mod.rs b/packages/process-daemon/src/ghostty/mod.rs
+--- a/packages/process-daemon/src/ghostty/mod.rs	2026-11-06 23:49:49.000000000 +0100
++++ b/packages/process-daemon/src/ghostty/mod.rs	2026-11-09 19:42:28.691877864 +0100
+@@ -43,17 +43,9 @@
+             "terminal dimensions must be positive"
+         );
+         let mut raw = ptr::null_mut();
+-        // SAFETY: options match the pinned C header; NULL selects Ghostty's allocator.
++        // SAFETY: cols and rows are positive. NULL selects Ghostty's allocator.
+         check(unsafe {
+-            ffi::ghostty_terminal_new(
+-                ptr::null(),
+-                &mut raw,
+-                ffi::GhosttyTerminalOptions {
+-                    cols: options.cols,
+-                    rows: options.rows,
+-                    max_scrollback: options.max_scrollback,
+-                },
+-            )
++            ffi::ghostty_terminal_new(ptr::null(), &mut raw, options.cols, options.rows)
+         })?;
+         let terminal = Self {
+             raw: NonNull::new(raw).context("Ghostty returned a null terminal")?,
+@@ -61,11 +53,25 @@
+             _actor: PhantomData,
+         };
+ 
+-        // SAFETY: userdata is an Rc-derived shared pointer retained until after terminal_free.
+-        // These callbacks only copy responses/mark a title change; they never reenter Ghostty.
++        // SAFETY: the handle is owned by `terminal`, so a failed set still frees it.
++        // libghostty-vt 1.0 defaults to a 10KB scrollback byte cap and no line cap.
++        // NULL restores that default. SIZE_MAX removes the byte cap.
++        // The API this crate targets is a line cap and no byte cap.
++        // These callbacks only copy responses or mark a title change; they never reenter Ghostty.
++        let unlimited = usize::MAX;
+         unsafe {
+             check(ffi::ghostty_terminal_set(
+                 raw,
++                ffi::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
++                ptr::from_ref(&unlimited).cast(),
++            ))?;
++            check(ffi::ghostty_terminal_set(
++                raw,
++                ffi::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
++                ptr::from_ref(&options.max_scrollback).cast(),
++            ))?;
++            check(ffi::ghostty_terminal_set(
++                raw,
+                 ffi::GHOSTTY_TERMINAL_OPT_USERDATA,
+                 terminal.effects.userdata(),
+             ))?;
+@@ -214,10 +220,7 @@
+     }
+ 
+     fn grid_ref(&self, tag: ffi::GhosttyPointTag, x: u16, y: u32) -> Result<ffi::GhosttyGridRef> {
+-        let mut value = ffi::GhosttyGridRef {
+-            size: size_of::<ffi::GhosttyGridRef>(),
+-            ..Default::default()
+-        };
++        let mut value = ffi::GhosttyGridRef::default();
+         // SAFETY: all tagged unions and sized structs match the pinned header. References
+         // remain private and are used only while &self excludes terminal mutations.
+         check(unsafe {
+@@ -237,7 +240,6 @@
+ 
+     fn selection(&self, start: (u16, u32), end: (u16, u32)) -> Result<ffi::GhosttySelection> {
+         Ok(ffi::GhosttySelection {
+-            size: size_of::<ffi::GhosttySelection>(),
+             start: self.grid_ref(ffi::GHOSTTY_POINT_TAG_SCREEN, start.0, start.1)?,
+             end: self.grid_ref(ffi::GHOSTTY_POINT_TAG_SCREEN, end.0, end.1)?,
+             rectangle: false,
+@@ -289,18 +291,62 @@
+ 
+     #[cfg(test)]
+     pub fn selection_text(&self, buffer: &mut [u8]) -> Result<Option<usize>> {
+-        let mut written = 0;
+-        // SAFETY: NULL selection reads the terminal-owned selection; out buffer is valid.
++        let mut selection = ffi::GhosttySelection::default();
++        // libghostty-vt 1.0 dropped ghostty_terminal_selection_format_buf.
++        // Read the terminal-owned selection and format that snapshot.
+         let result = unsafe {
+-            ffi::ghostty_terminal_selection_format_buf(
++            ffi::ghostty_terminal_get(
+                 self.raw.as_ptr(),
+-                ffi::GhosttyTerminalSelectionFormatOptions {
+-                    size: size_of::<ffi::GhosttyTerminalSelectionFormatOptions>(),
+-                    emit: ffi::GHOSTTY_FORMATTER_FORMAT_PLAIN,
+-                    unwrap: true,
+-                    trim: true,
+-                    selection: ptr::null(),
+-                },
++                ffi::GHOSTTY_TERMINAL_DATA_SELECTION,
++                ptr::from_mut(&mut selection).cast(),
++            )
++        };
++        if result == ffi::GHOSTTY_NO_VALUE {
++            return Ok(None);
++        }
++        check(result)?;
++        let mut raw = ptr::null_mut();
++        // SAFETY: NULL selects Ghostty's allocator. The terminal outlives the formatter.
++        check(unsafe {
++            ffi::ghostty_formatter_terminal_new(ptr::null(), &mut raw, self.raw.as_ptr())
++        })?;
++        let raw = NonNull::new(raw).context("Ghostty returned a null formatter")?;
++        let formatter = Formatter {
++            raw,
++            _borrow: PhantomData,
++        };
++        // The removed helper emitted plain text, unwrapped and trimmed.
++        let emit = ffi::GHOSTTY_FORMATTER_FORMAT_PLAIN;
++        let unwrap = true;
++        let trim = true;
++        // SAFETY: each value lives for its set call. The selection outlives the formatter.
++        unsafe {
++            check(ffi::ghostty_formatter_set(
++                formatter.raw.as_ptr(),
++                ffi::GHOSTTY_FORMATTER_OPT_EMIT,
++                ptr::from_ref(&emit).cast(),
++            ))?;
++            check(ffi::ghostty_formatter_set(
++                formatter.raw.as_ptr(),
++                ffi::GHOSTTY_FORMATTER_OPT_UNWRAP,
++                ptr::from_ref(&unwrap).cast(),
++            ))?;
++            check(ffi::ghostty_formatter_set(
++                formatter.raw.as_ptr(),
++                ffi::GHOSTTY_FORMATTER_OPT_TRIM,
++                ptr::from_ref(&trim).cast(),
++            ))?;
++            check(ffi::ghostty_formatter_set(
++                formatter.raw.as_ptr(),
++                ffi::GHOSTTY_FORMATTER_OPT_SELECTION,
++                ptr::from_ref(&selection).cast(),
++            ))?;
++        }
++        let mut written = 0;
++        // SAFETY: terminal and selection outlive formatter; the buffer is valid for its length.
++        let result = unsafe {
++            ffi::ghostty_formatter_format_buf(
++                formatter.raw.as_ptr(),
+                 buffer.as_mut_ptr(),
+                 buffer.len(),
+                 &mut written,
+@@ -336,49 +382,68 @@
+         format: Format,
+         selection: Option<&'a ffi::GhosttySelection>,
+     ) -> Result<Self> {
+-        let extras = selection.is_none();
+-        let options = ffi::GhosttyFormatterTerminalOptions {
+-            size: size_of::<ffi::GhosttyFormatterTerminalOptions>(),
+-            emit: match format {
+-                Format::Plain => ffi::GHOSTTY_FORMATTER_FORMAT_PLAIN,
+-                Format::Vt => ffi::GHOSTTY_FORMATTER_FORMAT_VT,
+-            },
+-            unwrap: false,
+-            trim: true,
+-            extra: ffi::GhosttyFormatterTerminalExtra {
+-                size: size_of::<ffi::GhosttyFormatterTerminalExtra>(),
+-                palette: false,
+-                modes: extras,
+-                scrolling_region: extras,
+-                tabstops: extras,
+-                pwd: extras,
+-                keyboard: extras,
+-                screen: ffi::GhosttyFormatterScreenExtra {
+-                    size: size_of::<ffi::GhosttyFormatterScreenExtra>(),
+-                    cursor: false,
+-                    style: extras,
+-                    hyperlink: extras,
+-                    protection: extras,
+-                    kitty_keyboard: extras,
+-                    charsets: extras,
+-                },
+-            },
+-            selection: selection.map_or(ptr::null(), ptr::from_ref),
+-        };
+         let mut raw = ptr::null_mut();
+-        // SAFETY: sized fields are initialized, and both borrowed values outlive the formatter.
++        // SAFETY: NULL selects Ghostty's allocator. The terminal outlives the formatter.
+         check(unsafe {
+-            ffi::ghostty_formatter_terminal_new(
+-                ptr::null(),
+-                &mut raw,
+-                terminal.raw.as_ptr(),
+-                options,
+-            )
++            ffi::ghostty_formatter_terminal_new(ptr::null(), &mut raw, terminal.raw.as_ptr())
+         })?;
+-        Ok(Self {
+-            raw: NonNull::new(raw).context("Ghostty returned a null formatter")?,
++        let raw = NonNull::new(raw).context("Ghostty returned a null formatter")?;
++        let formatter = Self {
++            raw,
+             _borrow: PhantomData,
+-        })
++        };
++        let emit = match format {
++            Format::Plain => ffi::GHOSTTY_FORMATTER_FORMAT_PLAIN,
++            Format::Vt => ffi::GHOSTTY_FORMATTER_FORMAT_VT,
++        };
++        let unwrap = false;
++        let trim = true;
++        // Whole-screen VT output restores terminal state. A row selection does not.
++        let extras: ffi::GhosttyFormatterExtras = if selection.is_none() {
++            ffi::GHOSTTY_FORMATTER_EXTRA_MODES
++                | ffi::GHOSTTY_FORMATTER_EXTRA_SCROLLING_REGION
++                | ffi::GHOSTTY_FORMATTER_EXTRA_TABSTOPS
++                | ffi::GHOSTTY_FORMATTER_EXTRA_PWD
++                | ffi::GHOSTTY_FORMATTER_EXTRA_KEYBOARD
++                | ffi::GHOSTTY_FORMATTER_EXTRA_STYLE
++                | ffi::GHOSTTY_FORMATTER_EXTRA_HYPERLINK
++                | ffi::GHOSTTY_FORMATTER_EXTRA_PROTECTION
++                | ffi::GHOSTTY_FORMATTER_EXTRA_KITTY_KEYBOARD
++                | ffi::GHOSTTY_FORMATTER_EXTRA_CHARSETS
++        } else {
++            0
++        };
++        // SAFETY: each value lives for its set call. The selection outlives the formatter.
++        unsafe {
++            check(ffi::ghostty_formatter_set(
++                formatter.raw.as_ptr(),
++                ffi::GHOSTTY_FORMATTER_OPT_EMIT,
++                ptr::from_ref(&emit).cast(),
++            ))?;
++            check(ffi::ghostty_formatter_set(
++                formatter.raw.as_ptr(),
++                ffi::GHOSTTY_FORMATTER_OPT_UNWRAP,
++                ptr::from_ref(&unwrap).cast(),
++            ))?;
++            check(ffi::ghostty_formatter_set(
++                formatter.raw.as_ptr(),
++                ffi::GHOSTTY_FORMATTER_OPT_TRIM,
++                ptr::from_ref(&trim).cast(),
++            ))?;
++            check(ffi::ghostty_formatter_set(
++                formatter.raw.as_ptr(),
++                ffi::GHOSTTY_FORMATTER_OPT_EXTRAS,
++                ptr::from_ref(&extras).cast(),
++            ))?;
++            if let Some(selection) = selection {
++                check(ffi::ghostty_formatter_set(
++                    formatter.raw.as_ptr(),
++                    ffi::GHOSTTY_FORMATTER_OPT_SELECTION,
++                    ptr::from_ref(selection).cast(),
++                ))?;
++            }
++        }
++        Ok(formatter)
+     }
+ }
+ 

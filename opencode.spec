@@ -12,11 +12,11 @@
 # Vite web frontend embedded (offline `opencode web`). Desktop/Electron
 # is out of scope.
 #
-# opencode-pty (persistent terminals) links the system libghostty-vt,
-# the same library kwi uses (Ghostty 1.4.0). Upstream build.rs fetches
-# a Zig 0.16 revision and builds a static archive. Patch0 links with
-# pkg-config instead and calls the 1.4 constructor. The CLI looks for
-# `opencode-pty` on PATH. Ordinary PTYs use bun-pty.
+# opencode-pty (persistent terminals) links the system libghostty-vt
+# 1.0, the same library kwi uses. Upstream build.rs fetches a Zig 0.16
+# revision and builds a static archive. Patch0 links with pkg-config
+# instead and matches the 1.0 ABI. The CLI looks for `opencode-pty` on
+# PATH. Ordinary PTYs use bun-pty.
 #
 # First time, on a networked machine (after bun is installed):
 #   ./vendor-sources.sh
@@ -56,7 +56,7 @@
 
 Name:		opencode
 Version:	2.2.6
-Release:	1
+Release:	2
 Summary:	Open-source AI coding agent
 Group:		Development/Other
 License:	MIT
@@ -70,7 +70,7 @@ Source1:	opencode-%{version}-node_modules.tar.xz
 Source2:	models-dev-api.json
 # OpenTUI 0.8.1 Zig core for cooker Zig 0.17 (yoga + uucode + ghostty
 # vendored from upstream zig-deps; no prebuilt libopentui).
-# Ghostty 1.4.0 src/lib is included. Zig resolves those imports even
+# Ghostty src/lib is included. Zig resolves those imports even
 # from comptime-dead wasm and Windows branches.
 Source3:	opentui-zig-0.8.1.tar.xz
 # fff 0.10.5 crate sources + cargo-vendor (no rust-toolchain, no Windows import libs)
@@ -83,7 +83,7 @@ Source4:	fff-0.10.5-with-vendor.tar.xz
 Source5:	opencode-vite-natives.tar.xz
 # Rust crates for packages/process-daemon. Not Ghostty source.
 Source6:	opencode-pty-vendor.tar.xz
-Patch0:	opencode-2.2.6-libghostty-1.4.patch
+Patch0:	opencode-2.2.6-libghostty-1.0.patch
 
 BuildRequires:	bun
 BuildRequires:	nodejs
@@ -98,7 +98,7 @@ BuildRequires:	make
 # Rolldown and Rollup build mimalloc with the cmake crate.
 BuildRequires:	cmake
 # opencode-pty. The devel package requires pkg-config and libghostty-vt.
-BuildRequires:	pkgconfig(libghostty-vt)
+BuildRequires:	pkgconfig(libghostty-vt) >= 1.0
 
 # Runtime: the compiled binary shells out to rg for codebase search.
 # OpenMandriva's rg is the grep-based C++ ripgrep implementation
@@ -145,8 +145,8 @@ Group:		Development/Other
 
 %description pty
 opencode-pty keeps OpenCode terminals alive across client reconnects.
-It links the system libghostty-vt (Ghostty 1.4.0), the same library
-kwi uses. The OpenCode CLIs exec `opencode-pty` from PATH.
+It links the system libghostty-vt 1.0, the same library kwi uses.
+The OpenCode CLIs exec `opencode-pty` from PATH.
 
 %prep
 %autosetup -p1 -n opencode-%{version}
