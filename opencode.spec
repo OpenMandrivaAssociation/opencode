@@ -560,7 +560,7 @@ export OPENCODE_DISABLE_AUTOUPDATE=1
 export PATH="%{buildroot}%{_bindir}:/usr/bin:$PATH"
 opencode --version
 opencode-web --version
-opencode-pty --version | grep -q 'opencode-pty 0.5.0 (protocol 8)'
+opencode-pty --version | grep -q 'opencode-pty 0.5.2 (protocol 8)'
 
 %files pty
 %license packages/process-daemon/LICENSE
