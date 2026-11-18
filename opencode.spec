@@ -55,7 +55,7 @@
 %endif
 
 Name:		opencode
-Version:	2.3.0
+Version:	2.3.1
 Release:	1
 Summary:	Open-source AI coding agent
 Group:		Development/Other
@@ -560,7 +560,7 @@ export OPENCODE_DISABLE_AUTOUPDATE=1
 export PATH="%{buildroot}%{_bindir}:/usr/bin:$PATH"
 opencode --version
 opencode-web --version
-opencode-pty --version | grep -q 'opencode-pty 0.5.2 (protocol 8)'
+opencode-pty --version | grep -q 'opencode-pty 0.6.0 (protocol 9)'
 
 %files pty
 %license packages/process-daemon/LICENSE
