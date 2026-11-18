@@ -16,7 +16,7 @@
 # plus the Rolldown vendor tree do not fit there.
 set -euo pipefail
 
-VERSION="${1:-2.3.1}"
+VERSION="${1:-2.3.2}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORKDIR=$(mktemp -d -p "${TMPDIR:-$HERE}")
 export TMPDIR="$WORKDIR"
