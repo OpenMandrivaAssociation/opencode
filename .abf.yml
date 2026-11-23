@@ -2,7 +2,7 @@ sources:
   fff-0.10.5-with-vendor.tar.xz: 9cdad6ba96570a4f19e9817ecd97bbeb182f1208
   opencode-2.4.0.tar.gz: 01ec120a038ccde32f662501e61a703361873b2f
   opencode-2.4.0-node_modules.tar.xz: 0c82f957bdfd6a44ac7475404caaf4177c0df0b3
-  opentui-zig-0.9.4.tar.xz: 29cd9e99018042203007c2344888748bd8abad1e
   models-dev-api.json: 94dc40d8be28adb2d9fd07f7fa0ed57c417a52e1
   opencode-vite-natives.tar.xz: dc996243976c131db3d356d9e42a1ddc9405f8e3
   opencode-pty-vendor.tar.xz: 6299c3c84e2ff3b42518c449066728db7bb2ed11
+  opentui-zig-0.9.4.tar.xz: bf4b410490b790d32ab87c9ceee673193e3ace10
