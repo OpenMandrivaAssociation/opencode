@@ -8,15 +8,15 @@
 # libfff_c.so (Rust), opencode-pty (Rust, system libghostty-vt), the
 # rolldown/lightningcss/oxide natives, and @parcel/watcher from source.
 #
-# fff 0.10.5 and OpenTUI 0.8.4 (Zig 0.17, zig-deps vendored) are packed
-# separately (fff-0.10.5-with-vendor.tar.xz, opentui-zig-0.8.4.tar.xz).
+# fff 0.10.5 and OpenTUI 0.9.4 (Zig 0.17.1, zig-deps vendored) are packed
+# separately (fff-0.10.5-with-vendor.tar.xz, opentui-zig-0.9.4.tar.xz).
 # This script does not regenerate them.
 #
 # Put TMPDIR on a real disk. /tmp is often a small tmpfs, and node_modules
 # plus the Rolldown vendor tree do not fit there.
 set -euo pipefail
 
-VERSION="${1:-2.3.2}"
+VERSION="${1:-2.4.0}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORKDIR=$(mktemp -d -p "${TMPDIR:-$HERE}")
 export TMPDIR="$WORKDIR"
@@ -87,6 +87,24 @@ echo "==> bun install --ignore-scripts (JS only, host platform)"
 	# only symlinks under packages/*/node_modules. An unmatched glob
 	# must not drop those symlinks: bun cannot resolve @opentui/core
 	# from packages/cli without them.
+	echo "==> filtered native package versions"
+	python - <<'PY'
+import json
+from pathlib import Path
+wanted = {"lightningcss", "rolldown", "rollup", "@tailwindcss/oxide"}
+for path in Path(".").rglob("package.json"):
+    if "node_modules" not in path.parts:
+        continue
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        continue
+    name = data.get("name")
+    if name not in wanted:
+        continue
+    print(f"{name} {data.get('version')} {path}")
+PY
+
 	shopt -s nullglob
 	paths=(node_modules packages/*/node_modules packages/*/*/node_modules)
 	tar -cf - "${paths[@]}" | xz -T0 -c > "$HERE/opencode-${VERSION}-node_modules.tar.xz"
@@ -202,7 +220,7 @@ echo "Store these with abb store (remove replaced keys from .abf.yml first):"
 echo "  $TGZ"
 echo "  $HERE/opencode-${VERSION}-node_modules.tar.xz"
 echo "  $HERE/models-dev-api.json"
-echo "  $HERE/opentui-zig-0.8.4.tar.xz"
+echo "  $HERE/opentui-zig-0.9.4.tar.xz"
 echo "  $HERE/fff-0.10.5-with-vendor.tar.xz"
 echo "  $HERE/opencode-vite-natives.tar.xz"
 echo "  $HERE/opencode-pty-vendor.tar.xz"
