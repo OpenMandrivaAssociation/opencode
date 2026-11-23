@@ -220,6 +220,26 @@ if old not in text:
 p.write_text(text.replace(old, new, 1))
 PY
 
+# @number0/iroh-* is a prebuilt .node, and the vendor tree only has the
+# x86_64 packages. Upstream leaves the binding unset when a target has
+# no Iroh build (Intel Macs). Machine links then stay on WebSockets.
+python - <<'PY'
+from pathlib import Path
+p = Path("packages/cli/script/build.ts")
+text = p.read_text()
+old = """  const irohPackage =
+    item.os === "darwin" && item.arch === "x64"
+      ? undefined
+      : `@number0/iroh-${item.os}-${item.arch}${item.os === "linux" ? `-${item.abi === "musl" ? "musl" : "gnu"}` : item.os === "win32" ? "-msvc" : ""}`
+"""
+new = """  // No prebuilt @number0/iroh native addon. Machine links use WebSockets.
+  const irohPackage = undefined
+"""
+if old not in text:
+	raise SystemExit("irohPackage block not found")
+p.write_text(text.replace(old, new, 1))
+PY
+
 # Anything that looks like a prebuilt native must not reach %build.
 # The from-source .so files are staged later, after this sweep.
 find node_modules packages -type f \( \
