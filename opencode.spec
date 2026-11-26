@@ -21,7 +21,7 @@
 # First time, on a networked machine (after bun is installed):
 #   ./vendor-sources.sh
 #   abb store opencode-VERSION.tar.gz opencode-VERSION-node_modules.tar.xz \
-#     models-dev-api.json opentui-zig-0.9.4.tar.xz \
+#     models-dev-api.json opentui-zig-0.9.9.tar.xz \
 #     fff-0.10.5-with-vendor.tar.xz opencode-vite-natives.tar.xz \
 #     opencode-pty-vendor.tar.xz
 # Remove a replaced key from .abf.yml before abb store reuses its name.
@@ -55,7 +55,7 @@
 %endif
 
 Name:		opencode
-Version:	2.4.1
+Version:	2.4.2
 Release:	1
 Summary:	Open-source AI coding agent
 Group:		Development/Other
@@ -68,11 +68,11 @@ Source1:	opencode-%{version}-node_modules.tar.xz
 # Trimmed models catalog from packages/core/script/update-models-snapshot.ts
 # (https://models.opencode.ai). Fetched at vendor time, not build time.
 Source2:	models-dev-api.json
-# OpenTUI 0.9.4 Zig core (upstream minimum Zig 0.17.1). yoga, uucode
+# OpenTUI 0.9.9 Zig core (upstream minimum Zig 0.17.1). yoga, uucode
 # and ghostty are vendored from upstream zig-deps; no prebuilt libopentui.
 # build.zig skips Zig's broken amxtf32intrin.h and compiles Yoga with
 # the system c++. Zig 0.17.1 cannot compile its own libc++.
-Source3:	opentui-zig-0.9.4.tar.xz
+Source3:	opentui-zig-0.9.9.tar.xz
 # fff 0.10.5 crate sources + cargo-vendor (no rust-toolchain, no Windows import libs)
 Source4:	fff-0.10.5-with-vendor.tar.xz
 # Rolldown 1.2.5 / Rollup 4.62.4 / lightningcss 1.33.0 and 1.32.0 /
@@ -315,13 +315,13 @@ PY
 FFF_SO="$PWD/fff-0.10.5/target/release/libfff_c.so"
 test -f "$FFF_SO"
 
-# --- libopentui.so from OpenTUI 0.9.4 ---
+# --- libopentui.so from OpenTUI 0.9.9 ---
 # Yoga is compiled by build.zig with the system c++ (addSystemCxxObject).
 # Zig 0.17's CLI flag is --release=fast, not -Doptimize=ReleaseFast.
 # The AMX-TF32 translate-c skip is in this tree's build.zig.
 # No FFmpeg prefix: the video shim builds with OTV_NO_FFMPEG.
 (
-	cd opentui-zig-0.9.4
+	cd opentui-zig-0.9.9
 %if "%{libc_family}" == "musl"
 %ifarch aarch64
 	zig build --release=fast -Dlibrary-target=aarch64-linux-musl
@@ -336,7 +336,7 @@ test -f "$FFF_SO"
 %endif
 %endif
 )
-OPENTUI_SO=$(find opentui-zig-0.9.4 -name libopentui.so ! -path '*/.zig-cache/*' | head -n1)
+OPENTUI_SO=$(find opentui-zig-0.9.9 -name libopentui.so ! -path '*/.zig-cache/*' | head -n1)
 test -n "$OPENTUI_SO" -a -f "$OPENTUI_SO"
 
 # bun --compile only embeds statically analyzable type:file imports.
@@ -350,7 +350,7 @@ stage_opentui() {
 	cat > "$dest/package.json" <<EOF
 {
   "name": "@opentui/core-linux-%{bun_cpu}%{opentui_pkg_suffix}",
-  "version": "0.9.4",
+  "version": "0.9.9",
   "type": "module",
   "main": "index.js",
   "exports": {
